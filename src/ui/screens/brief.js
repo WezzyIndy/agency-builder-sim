@@ -11,7 +11,7 @@ import { metaLeads } from '../../engine/benchmarks.js';
 import { BUSINESS_BENCHMARKS } from '../../config/benchmarks.js';
 
 const REALISM = [
-  { id: 1, label: '1', sub: 'Tracks benchmarks' },
+  { id: 1, label: '1', sub: 'Steady' },
   { id: 2, label: '2', sub: '' },
   { id: 3, label: '3', sub: 'Default' },
   { id: 4, label: '4', sub: '' },
@@ -85,7 +85,7 @@ export function renderBrief(app, actions) {
     section(
       'Realism',
       h('p', { class: 'small muted' }, 'Low realism tracks benchmarks tightly, so best practice reliably wins. High realism adds volatility, and unconventional setups can win or lose. Locked once you take the client.'),
-      chips('Realism', REALISM, run.realism, (id) => actions.setRealism(id)),
+      chips('Realism', REALISM, run.realism, (id) => actions.setRealism(id), { className: 'compact' }),
     ),
     stickyActions(
       h('div', { class: 'actions' }, button('Decline this client', () => actions.decide({ type: 'decline' }), 'secondary'), button('Take the client', () => actions.decide({ type: 'accept' }), 'primary')),

@@ -33,7 +33,7 @@ function counterfactualCard(cf) {
           {},
           h('tr', {}, h('td', {}, 'Outcome'), h('td', {}, b.endReason.replace('_', ' ')), h('td', {}, a.endReason.replace('_', ' '))),
           h('tr', {}, h('td', {}, 'Booked clients'), h('td', {}, num(b.jobs)), h('td', {}, num(a.jobs))),
-          h('tr', {}, h('td', {}, 'Real cost per lead (booked basis)'), h('td', {}, cost(b.qaCpl)), h('td', {}, cost(a.qaCpl))),
+          h('tr', {}, h('td', {}, 'Real cost per lead'), h('td', {}, cost(b.qaCpl)), h('td', {}, cost(a.qaCpl))),
           h('tr', {}, h('td', {}, 'Client profit after fee'), h('td', {}, money(b.clientProfit)), h('td', {}, money(a.clientProfit))),
           h('tr', {}, h('td', {}, 'Satisfaction'), h('td', {}, score(b.satisfaction)), h('td', {}, score(a.satisfaction))),
         ),

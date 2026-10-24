@@ -42,6 +42,18 @@ test('Covers AE2. Changing a decision leaves the brief and pre-change weeks iden
   assert.deepEqual(r.brief, s.brief);
 });
 
+test('a churned run with prohibited copy gets a counterfactual that improves the outcome', () => {
+  for (let seed = 1; seed < 300; seed++) {
+    const s = playWeeks(launched(seed, { setup: 'advantage', adSets: [websiteAdSet({ angles: ['tired_of_wrinkles'] })] }), 8);
+    if (s.final?.endReason !== 'churn') continue;
+    const cf = computeCounterfactual(s);
+    assert.equal(cf.found, true);
+    assert.ok(cf.after.endReason !== 'churn' || cf.after.satisfaction > cf.before.satisfaction, JSON.stringify(cf));
+    return;
+  }
+  assert.fail('no churned run found');
+});
+
 test('a run with no failed decision checks reports no higher-impact alternative', () => {
   const s = playRun('bestPractice', { seed: 5, businessId: 'medspa', level: 1, realism: 3, forceClass: 'achievable' });
   const cf = computeCounterfactual(s);

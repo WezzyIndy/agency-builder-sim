@@ -44,10 +44,10 @@ export function meter(label, value, { suffix = '', thresholds = [40, 70] } = {})
 }
 
 /** A group of selectable chips. options: [{ id, label, available, reason, sub }] */
-export function chips(name, options, selected, onPick, { multi = false } = {}) {
+export function chips(name, options, selected, onPick, { multi = false, className = null } = {}) {
   return h(
     'div',
-    { class: 'chips', role: multi ? 'group' : 'radiogroup', 'aria-label': name },
+    { class: ['chips', className], role: multi ? 'group' : 'radiogroup', 'aria-label': name },
     options.map((o) => {
       const isOn = multi ? selected.includes(o.id) : selected === o.id;
       const disabled = o.available === false;

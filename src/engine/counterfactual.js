@@ -198,13 +198,23 @@ function outcome(s) {
   };
 }
 
-/** Gain in true result: lower quality-adjusted CPL is better; no result is worst. */
+const FAILED = ['churn', 'budget_failure', 'target_failure', 'client_ended'];
+
+/**
+ * Gain from a change: lower quality-adjusted CPL is better (no result is worst),
+ * keeping a client who otherwise failed counts heavily, and satisfaction breaks ties.
+ */
 function gain(before, after) {
   const b = before.qaCpl ?? Infinity;
   const a = after.qaCpl ?? Infinity;
-  if (Number.isFinite(b) && Number.isFinite(a)) return (b - a) / b;
-  if (!Number.isFinite(b) && Number.isFinite(a)) return 1;
-  return (after.satisfaction - before.satisfaction) / 100;
+  let g;
+  if (Number.isFinite(b) && Number.isFinite(a)) g = (b - a) / b;
+  else if (!Number.isFinite(b) && Number.isFinite(a)) g = 1;
+  else if (Number.isFinite(b) && !Number.isFinite(a)) g = -1;
+  else g = 0;
+  if (FAILED.includes(before.endReason) && !FAILED.includes(after.endReason)) g += 0.5;
+  if (!FAILED.includes(before.endReason) && FAILED.includes(after.endReason)) g -= 0.5;
+  return g + (after.satisfaction - before.satisfaction) / 200;
 }
 
 /**

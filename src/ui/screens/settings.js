@@ -15,9 +15,10 @@ export function renderSettings(app, actions) {
       'Default realism for new clients',
       chips(
         'Default realism',
-        [1, 2, 3, 4, 5].map((n) => ({ id: n, label: String(n), sub: n === 1 ? 'Tracks benchmarks' : n === 3 ? 'Default' : n === 5 ? 'Volatile' : '' })),
+        [1, 2, 3, 4, 5].map((n) => ({ id: n, label: String(n), sub: n === 1 ? 'Steady' : n === 3 ? 'Default' : n === 5 ? 'Volatile' : '' })),
         s.realismDefault,
         (id) => actions.saveSettings({ realismDefault: id }),
+        { className: 'compact' },
       ),
     ),
     section(
