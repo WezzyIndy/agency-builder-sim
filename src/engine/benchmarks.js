@@ -112,3 +112,32 @@ export function channelsFor(businessId, level) {
   if (level >= 2 && map.search) channels.push('search');
   return channels;
 }
+
+const blendRange = (a, b, s) => ({ min: s * a.min + (1 - s) * b.min, typical: s * a.typical + (1 - s) * b.typical, max: s * a.max + (1 - s) * b.max });
+
+/**
+ * The Meta cost-per-result benchmark a business is simulated and judged
+ * against: CPL for leads (HVAC blends its two pools by service share), CPA
+ * for ecomm. range is the published range; band is the harness pass band.
+ */
+export function metaCostBench(businessId, serviceShare = 0.7) {
+  const b = benchmarkFor(businessId, 'meta');
+  if (b.kind === 'sales') return { kind: 'sales', cost: b.cpa, ctr: b.ctr, cpc: b.cpc, range: b.cpaRange, band: b.cpaBand, category: b.category };
+  if (b.service) {
+    const sv = b.service;
+    const rp = b.replacement;
+    const s = serviceShare;
+    const range = blendRange(sv.cplRange, rp.cplRange, s);
+    return {
+      kind: 'leads',
+      cost: s * sv.cpl + (1 - s) * rp.cpl,
+      ctr: sv.ctr,
+      cpc: sv.cpc,
+      range,
+      band: [s * sv.cplBand[0] + (1 - s) * rp.cplBand[0], s * sv.cplBand[1] + (1 - s) * rp.cplBand[1]],
+      pools: { service: sv.cpl, replacement: rp.cpl },
+      category: sv.category,
+    };
+  }
+  return { kind: 'leads', cost: b.cpl, ctr: b.ctr, cpc: b.cpc, range: b.cplRange, band: b.cplBand, category: b.category };
+}

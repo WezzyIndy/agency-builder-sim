@@ -1,24 +1,34 @@
 // src/engine/week.js
 //
-// One simulated week for every ad set in a Meta lead campaign (spec 9.2-9.8).
+// One simulated week for every ad set in a Meta campaign (spec 9.2-9.8).
 //
-// Per ad set:
+// Lead businesses, per ad set:
 //   cost per lead = benchmark CPL x clamp(product of non-benchmark modifiers)
 //                   x market factor x weekly noise
 //   true leads    = spend / cost per lead x trap multiplier   (traps bypass the clamp)
 //   reported      = true leads x tracking factor             (what the platform sees)
 //   jobs          = true leads x close rate x lead-quality multipliers
+// HVAC splits leads into service and replacement pools. Angles and lead
+// source shift the mix; replacement leads cost more and are worth far more.
+//
+// Ecomm (boutique apparel), per ad set:
+//   cost per purchase = benchmark CPA x clamp(modifiers) x market x noise
+//   revenue           = true purchases x the brief's AOV
+//
+// Every week also records value units: true results counted at the brief's
+// expected value per result (gross profit / breakeven). For a single-pool
+// lead business that is jobs / close rate, the client's own way of counting
+// leads; for HVAC it weights replacement jobs by their value; for ecomm it
+// is purchases weighted by order value. Scores and satisfaction use it.
 //
 // Learning is continuous (9.5) and normalized to the reference progress of
 // one ad set at the typical L1 budget (KTD5), so best practice at a typical
-// budget lands near the benchmark CPL.
-//
-// Ecomm (boutique apparel) simulation arrives with apparel content in M4.
+// budget lands near the benchmark.
 
 import { stream } from './rng.js';
 import { clamp, safeDiv, sum } from './math.js';
-import { metaLeads } from './benchmarks.js';
-import { resolveLeadSetup } from './metaRules.js';
+import { metaCostBench } from './benchmarks.js';
+import { resolveLeadSetup, resolveSalesSetup } from './metaRules.js';
 import { BUSINESS_BENCHMARKS } from '../config/benchmarks.js';
 import { LEVEL_BUDGETS, WEEKS_PER_MONTH } from '../config/economics.js';
 import { TUNABLES } from '../config/tunables.js';
@@ -27,16 +37,16 @@ import { policyCheck } from './policy.js';
 
 const T = TUNABLES;
 
-/** Reference learning progress: one ad set at the typical L1 weekly budget. */
-export function referenceProgress(benchCpl) {
+/** Reference learning progress: one ad set at the typical L1 weekly budget, with the recommended event. */
+export function referenceProgress(benchCost, eventsPerResult = 1) {
   const typicalWeekly = LEVEL_BUDGETS[1][1] / WEEKS_PER_MONTH;
-  return Math.min(1, typicalWeekly / benchCpl / T.learning.eventsToExit);
+  return Math.min(1, (typicalWeekly / benchCost) * eventsPerResult / T.learning.eventsToExit);
 }
 
-export function learningMultipliers(expectedEvents, benchCpl, resetThisWeek) {
+export function learningMultipliers(expectedEvents, benchCost, resetThisWeek, refEventsPerResult = 1) {
   const L = T.learning;
   const progress = resetThisWeek ? 0 : Math.min(1, expectedEvents / L.eventsToExit);
-  const ref = referenceProgress(benchCpl);
+  const ref = referenceProgress(benchCost, refEventsPerResult);
   let cost = (1 + L.kCost * (1 - progress)) / (1 + L.kCost * (1 - ref));
   if (resetThisWeek) cost *= 1 + L.editResetPenalty;
   const variance = (1 + L.kVar * (1 - progress)) / (1 + L.kVar * (1 - ref));
@@ -46,6 +56,11 @@ export function learningMultipliers(expectedEvents, benchCpl, resetThisWeek) {
 /** Max ad sets the budget can feed: max(1, floor(weekly / (10 x expected cost per event))). */
 export function maxAdSets(weeklyBudget, costPerEvent) {
   return Math.max(1, Math.floor(weeklyBudget / (10 * costPerEvent)));
+}
+
+/** The benchmark a brief is simulated against (HVAC blends by the brief's service share). */
+export function briefBench(brief) {
+  return metaCostBench(brief.businessId, brief.econ.serviceShare);
 }
 
 function angleResonance(angleIds, audienceOption, ctx) {
@@ -62,51 +77,123 @@ function angleResonance(angleIds, audienceOption, ctx) {
   return 0.7 * best + 0.3 * avg;
 }
 
+/** Replacement share of an HVAC ad set's leads: the brief's base mix shifted by angles and lead source. */
+export function replacementShare(adSet, setup, brief, weight = 1) {
+  const angles = contentFor(brief.businessId).angles;
+  const logs = adSet.angles.map((id) => Math.log(angles.find((a) => a.id === id)?.mix ?? 1));
+  const angleMult = Math.exp(sum(logs) / Math.max(1, logs.length));
+  const keys = setup.source.split('+');
+  const sourceMult = Math.exp(sum(keys.map((k) => Math.log(T.hvacMix[k] ?? 1))) / keys.length);
+  const r0 = 1 - brief.econ.serviceShare;
+  const odds = (r0 / (1 - r0)) * (angleMult * sourceMult) ** weight;
+  return odds / (1 + odds);
+}
+
+/** Breakeven value per lead at a replacement share (lead value x close x margin, by pool). */
+function valuePerLead(econ, r) {
+  return (1 - r) * econ.pools.service.breakevenCpl + r * econ.pools.replacement.breakevenCpl;
+}
+
+/** Shared cost modifiers (inside the clamp) for one ad set. */
+function commonFactors(ctx, adSet, week, { corruptedAudience }) {
+  const { brief, campaign, realism } = ctx;
+  const aud = adSet.audience.option;
+  const f = {};
+  f.setup = campaign.setup === 'advantage' ? T.advantagePlusSetup : 1;
+  if (aud === 'controls') f.audience = corruptedAudience ? T.audience.controlsCorrupted : T.audience.controls;
+  else if (aud === 'suggestions') f.audience = week - adSet.startWeek < 2 ? T.audience.suggestionsEarly : T.audience.suggestions;
+  else f.audience = T.audience.limited;
+  f.audience *= Math.exp(brief.hidden.affinityZ[aud] * T.realism.affinitySd[realism]);
+  f.angles = 1 / angleResonance(adSet.angles, aud, ctx);
+  return f;
+}
+
+function seasonFactor(ctx, week) {
+  const halfway = Math.ceil(ctx.brief.campaignWeeks / 2);
+  let season = ctx.demandMult || 1;
+  if (ctx.brief.hidden.seasonality === 'off' && week <= halfway) season *= T.seasonality.offSeasonFirstHalf;
+  if (ctx.brief.hidden.seasonality === 'peak') season *= T.seasonality.peak;
+  return season;
+}
+
+function fatigueFactor(adSet, week) {
+  const angleWeeks = week - adSet.angleStartWeek;
+  return angleWeeks > T.fatigue.startAfterWeek ? 1 / T.fatigue.ctrDecay ** (angleWeeks - T.fatigue.startAfterWeek) : 1;
+}
+
+function emptyResult(adSet) {
+  return { id: adSet.id, spend: 0, clicks: 0, impressions: 0, trueLeads: 0, reportedLeads: 0, jobs: 0, valueUnits: 0, revenue: 0, gross: 0, gross12: 0, disapproved: false, policyFlags: [], factors: {} };
+}
+
 /**
  * ctx: {
  *   seed, week (1-based), realism, brief, campaign, weeklyBudget,
- *   defects (effective, after onboarding fixes), speedToLead ('fast'|'average'|'slow'|'slowAdvised'),
- *   closeMultExtra, demandMult, corruptWeeks, qualifiedWeeks (per ad set id)
+ *   defects (effective, after onboarding fixes), speedToLead ('fast'|'average'|'slow'|'slowAdvised'|null),
+ *   closeRate, closeMultExtra, demandMult, corruptWeeks, qualifiedWeeks (per ad set id)
  * }
  */
 export function simulateWeek(ctx) {
-  const { brief, campaign, week, realism } = ctx;
-  if (BUSINESS_BENCHMARKS[brief.businessId].goal !== 'leads') {
-    throw new Error('Ecomm simulation is not built yet (M4).');
+  const isSales = BUSINESS_BENCHMARKS[ctx.brief.businessId].goal === 'sales';
+  const results = isSales ? salesAdSets(ctx) : leadAdSets(ctx);
+  const totals = {
+    spend: sum(results.map((r) => r.spend)),
+    clicks: sum(results.map((r) => r.clicks)),
+    impressions: sum(results.map((r) => r.impressions)),
+    trueLeads: sum(results.map((r) => r.trueLeads)),
+    reportedLeads: sum(results.map((r) => r.reportedLeads)),
+    jobs: sum(results.map((r) => r.jobs)),
+    valueUnits: sum(results.map((r) => r.valueUnits)),
+    revenue: sum(results.map((r) => r.revenue)),
+    gross: sum(results.map((r) => r.gross)),
+    gross12: sum(results.map((r) => r.gross12)),
+  };
+  if (ctx.brief.econ.pools) {
+    totals.replacementLeads = sum(results.map((r) => r.replacementLeads || 0));
+    totals.serviceLeads = totals.trueLeads - totals.replacementLeads;
+    totals.replacementJobs = sum(results.map((r) => r.replacementJobs || 0));
   }
-  const bench = metaLeads(BUSINESS_BENCHMARKS[brief.businessId].meta);
+  totals.trueCpl = safeDiv(totals.spend, totals.trueLeads);
+  totals.platformCpl = safeDiv(totals.spend, totals.reportedLeads);
+  totals.anyDisapproved = results.some((r) => r.disapproved);
+  totals.disapprovedFlags = [...new Set(results.flatMap((r) => r.policyFlags))];
+  return { week: ctx.week, adSets: results, totals };
+}
+
+// ---------------------------------------------------------------- leads
+
+function leadAdSets(ctx) {
+  const { brief, campaign, week, realism } = ctx;
+  const bench = briefBench(brief);
+  const econ = brief.econ;
+  const pooled = Boolean(econ.pools);
   const w = T.realism.modifierWeight[realism];
   const weighted = (m) => m ** w;
   const d = ctx.defects;
   const corrupted = d.doubleFire;
-  const halfway = Math.ceil(brief.campaignWeeks / 2);
   const market = Math.exp(brief.hidden.marketZ * T.realism.marketSd[realism]);
 
   const active = campaign.adSets.filter((a) => !a.paused);
   const totalShare = sum(active.map((a) => a.budgetShare)) || 1;
-  const cap = maxAdSets(ctx.weeklyBudget, bench.cpl);
+  const cap = maxAdSets(ctx.weeklyBudget, bench.cost);
   const fragmentation = 1 + T.fragmentationPenalty * Math.max(0, active.length - cap);
 
-  const results = campaign.adSets.map((adSet, i) => {
-    const base = { id: adSet.id, spend: 0, clicks: 0, impressions: 0, trueLeads: 0, reportedLeads: 0, jobs: 0, disapproved: false, policyFlags: [], factors: {} };
+  return campaign.adSets.map((adSet, i) => {
+    const base = emptyResult(adSet);
     if (adSet.paused) return { ...base, paused: true };
     const policy = policyCheck(adSet, { seed: ctx.seed, week, businessId: brief.businessId }, i);
     if (policy.disapproved) return { ...base, disapproved: true, policyFlags: policy.flags };
 
     const spend = ctx.weeklyBudget * (adSet.budgetShare / totalShare);
     const setup = resolveLeadSetup(adSet);
-    const aud = adSet.audience.option;
+    const az = brief.hidden.affinityZ;
+    const affinitySd = T.realism.affinitySd[realism];
+
+    // HVAC: the delivered lead mix sets the base cost per lead (replacement leads cost more).
+    const r = pooled ? replacementShare(adSet, setup, brief, w) : null;
+    const baseCpl = pooled ? (1 - r) * bench.pools.service + r * bench.pools.replacement : bench.cost;
 
     // Non-benchmark cost modifiers (inside the clamp).
-    const f = {};
-    f.setup = campaign.setup === 'advantage' ? T.advantagePlusSetup : 1;
-    if (aud === 'controls') f.audience = corrupted && setup.usesPixel ? T.audience.controlsCorrupted : T.audience.controls;
-    else if (aud === 'suggestions') f.audience = week - adSet.startWeek < 2 ? T.audience.suggestionsEarly : T.audience.suggestions;
-    else f.audience = T.audience.limited;
-    const affinitySd = T.realism.affinitySd[realism];
-    const az = brief.hidden.affinityZ;
-    f.audience *= Math.exp(az[aud] * affinitySd);
-    f.angles = 1 / angleResonance(adSet.angles, aud, ctx);
+    const f = commonFactors(ctx, adSet, week, { corruptedAudience: corrupted && setup.usesPixel });
     f.location = setup.cpl * Math.exp(sourceAffinity(setup.source, az) * affinitySd);
     f.landing = setup.usesPixel && d.landingWeak ? 1 / T.landingWeakCvr : 1;
     let tracking = 1;
@@ -117,18 +204,14 @@ export function simulateWeek(ctx) {
     }
     f.tracking = tracking;
     f.fragmentation = fragmentation;
-    const angleWeeks = week - adSet.angleStartWeek;
-    f.fatigue = angleWeeks > T.fatigue.startAfterWeek ? 1 / T.fatigue.ctrDecay ** (angleWeeks - T.fatigue.startAfterWeek) : 1;
-    let season = ctx.demandMult || 1;
-    if (brief.hidden.seasonality === 'off' && week <= halfway) season *= T.seasonality.offSeasonFirstHalf;
-    if (brief.hidden.seasonality === 'peak') season *= T.seasonality.peak;
-    f.seasonality = season;
+    f.fatigue = fatigueFactor(adSet, week);
+    f.seasonality = seasonFactor(ctx, week);
 
     // Learning: expected optimization events at this spend, before learning and noise.
     const preLearning = Object.values(f).reduce((p, m) => p * weighted(m), 1);
     const trackingFactor = reportingFactor(setup, d);
-    const expectedEvents = (spend / (bench.cpl * clamp(preLearning, ...T.clamp))) * setup.eventsPerLead * trackingFactor;
-    const learning = learningMultipliers(expectedEvents, bench.cpl, adSet.resetWeek === week);
+    const expectedEvents = (spend / (baseCpl * clamp(preLearning, ...T.clamp))) * setup.eventsPerLead * trackingFactor;
+    const learning = learningMultipliers(expectedEvents, bench.cost, adSet.resetWeek === week);
     f.learning = learning.cost;
 
     const product = Object.values(f).reduce((p, m) => p * weighted(m), 1);
@@ -138,7 +221,7 @@ export function simulateWeek(ctx) {
     // counterfactual that leaves this ad set unchanged replays its exact draws.
     const rng = stream(ctx.seed, 'funnel', week, i, setupSignature(adSet));
     const noise = rng.lognormalMult(T.realism.weeklySd[realism] * learning.variance);
-    const cpl = bench.cpl * clamped * market * noise;
+    const cpl = baseCpl * clamped * market * noise;
     const trapMult = setup.conv / setup.cpc; // bypasses the clamp
     const trueLeads = rng.stochasticRound((spend / cpl) * trapMult);
     const reportedLeads = rng.stochasticRound(trueLeads * trackingFactor);
@@ -154,8 +237,35 @@ export function simulateWeek(ctx) {
       const qWeeks = (ctx.qualifiedWeeks && ctx.qualifiedWeeks[adSet.id]) || 0;
       closeMods *= 1 + Math.min(T.qualifiedGoal.closeMaxBonus, T.qualifiedGoal.closeStep * qWeeks);
     }
-    const close = Math.min(0.95, ctx.closeRate * weighted(closeMods) * (ctx.closeMultExtra || 1));
-    const jobs = stream(ctx.seed, 'jobs', week, i).stochasticRound(trueLeads * close);
+    const closeFor = (rate) => Math.min(0.95, rate * weighted(closeMods) * (ctx.closeMultExtra || 1));
+    const jobsRng = stream(ctx.seed, 'jobs', week, i);
+
+    let jobs;
+    let valueUnits;
+    let revenue;
+    let gross;
+    let gross12;
+    const pools = {};
+    if (pooled) {
+      const sv = econ.pools.service;
+      const rp = econ.pools.replacement;
+      const replacementLeads = rng.stochasticRound(trueLeads * r);
+      const serviceLeads = trueLeads - replacementLeads;
+      const serviceJobs = jobsRng.stochasticRound(serviceLeads * closeFor(sv.closeRate));
+      const replacementJobs = jobsRng.stochasticRound(replacementLeads * closeFor(rp.closeRate));
+      jobs = serviceJobs + replacementJobs;
+      revenue = serviceJobs * sv.firstJob + replacementJobs * rp.firstJob;
+      gross = serviceJobs * sv.firstJob * sv.margin + replacementJobs * rp.firstJob * rp.margin;
+      gross12 = serviceJobs * sv.valuePerCustomer * sv.margin + replacementJobs * rp.valuePerCustomer * rp.margin;
+      valueUnits = gross12 / econ.breakeven;
+      Object.assign(pools, { replacementShare: r, replacementLeads, serviceLeads, replacementJobs });
+    } else {
+      jobs = jobsRng.stochasticRound(trueLeads * closeFor(ctx.closeRate));
+      valueUnits = jobs / ctx.closeRate;
+      revenue = jobs * econ.firstJob;
+      gross = revenue * econ.margin;
+      gross12 = jobs * econ.valuePerCustomer * econ.margin;
+    }
 
     // Driver factors on cost per booked job, for the round debrief.
     const factors = {
@@ -172,6 +282,8 @@ export function simulateWeek(ctx) {
       speedToLead: 1 / T.speedToLead[ctx.speedToLead],
       market: market * noise,
     };
+    // HVAC: cost per unit of value at the delivered mix vs the brief's expected mix.
+    if (pooled) factors.leadMix = baseCpl / bench.cost / (valuePerLead(econ, r) / econ.breakeven);
 
     return {
       ...base,
@@ -181,6 +293,11 @@ export function simulateWeek(ctx) {
       trueLeads,
       reportedLeads,
       jobs,
+      valueUnits,
+      revenue,
+      gross,
+      gross12,
+      ...pools,
       setupKind: setup.kind,
       source: setup.source,
       usesPixel: setup.usesPixel,
@@ -192,20 +309,110 @@ export function simulateWeek(ctx) {
       factors,
     };
   });
+}
 
-  const totals = {
-    spend: sum(results.map((r) => r.spend)),
-    clicks: sum(results.map((r) => r.clicks)),
-    impressions: sum(results.map((r) => r.impressions)),
-    trueLeads: sum(results.map((r) => r.trueLeads)),
-    reportedLeads: sum(results.map((r) => r.reportedLeads)),
-    jobs: sum(results.map((r) => r.jobs)),
-  };
-  totals.trueCpl = safeDiv(totals.spend, totals.trueLeads);
-  totals.platformCpl = safeDiv(totals.spend, totals.reportedLeads);
-  totals.anyDisapproved = results.some((r) => r.disapproved);
-  totals.disapprovedFlags = [...new Set(results.flatMap((r) => r.policyFlags))];
-  return { week, adSets: results, totals };
+// ---------------------------------------------------------------- ecomm
+
+function salesAdSets(ctx) {
+  const { brief, campaign, week, realism } = ctx;
+  const E = T.ecomm;
+  const bench = briefBench(brief);
+  const econ = brief.econ;
+  const w = T.realism.modifierWeight[realism];
+  const weighted = (m) => m ** w;
+  const d = ctx.defects;
+  const market = Math.exp(brief.hidden.marketZ * T.realism.marketSd[realism]);
+  const refEvents = E.events.initiate_checkout.eventsPerPurchase;
+
+  const active = campaign.adSets.filter((a) => !a.paused);
+  const totalShare = sum(active.map((a) => a.budgetShare)) || 1;
+  const cap = maxAdSets(ctx.weeklyBudget, bench.cost);
+  const fragmentation = 1 + T.fragmentationPenalty * Math.max(0, active.length - cap);
+
+  return campaign.adSets.map((adSet, i) => {
+    const base = emptyResult(adSet);
+    if (adSet.paused) return { ...base, paused: true };
+    const policy = policyCheck(adSet, { seed: ctx.seed, week, businessId: brief.businessId }, i);
+    if (policy.disapproved) return { ...base, disapproved: true, policyFlags: policy.flags };
+
+    const spend = ctx.weeklyBudget * (adSet.budgetShare / totalShare);
+    const setup = resolveSalesSetup(adSet);
+    const starved = setup.needsPurchase && d.missingPurchase;
+
+    const f = commonFactors(ctx, adSet, week, { corruptedAudience: starved });
+    f.location = setup.cpl;
+    f.landing = setup.usesPixel && d.landingWeak ? 1 / T.landingWeakCvr : 1;
+    let tracking = 1;
+    if (setup.usesPixel && d.noCapi) tracking /= T.tracking.noCapiCvr;
+    if (starved) tracking *= E.missingPurchaseStarve;
+    f.tracking = tracking;
+    f.fragmentation = fragmentation;
+    f.fatigue = fatigueFactor(adSet, week);
+    f.seasonality = seasonFactor(ctx, week);
+
+    // Reported purchases need the purchase event; shallower events still fire without it.
+    const capi = setup.usesPixel && d.noCapi ? T.tracking.noCapi : 1;
+    const reportFactor = setup.usesPixel ? capi * (d.missingPurchase ? E.missingPurchaseReported : 1) : 1;
+    const eventFactor = setup.needsPurchase ? reportFactor : capi;
+
+    const preLearning = Object.values(f).reduce((p, m) => p * weighted(m), 1);
+    const expectedEvents = (spend / (bench.cost * clamp(preLearning, ...T.clamp))) * setup.eventsPerLead * eventFactor;
+    const learning = learningMultipliers(expectedEvents, bench.cost, adSet.resetWeek === week, refEvents);
+    f.learning = learning.cost;
+
+    const product = Object.values(f).reduce((p, m) => p * weighted(m), 1);
+    const clamped = clamp(product, ...T.clamp);
+
+    const rng = stream(ctx.seed, 'funnel', week, i, setupSignature(adSet));
+    const noise = rng.lognormalMult(T.realism.weeklySd[realism] * learning.variance);
+    const cpa = bench.cost * clamped * market * noise;
+    const trapMult = setup.conv / setup.cpc;
+    const purchases = rng.stochasticRound((spend / cpa) * trapMult);
+    const reported = rng.stochasticRound(purchases * reportFactor);
+    const aov = econ.aov * setup.aovMult * rng.lognormalMult(E.aovSd);
+    const revenue = purchases * aov;
+    const gross = revenue * econ.margin;
+    const cpc = bench.cpc * setup.cpc * market * f.fatigue;
+    const clicks = Math.round(spend / cpc);
+    const impressions = Math.round(clicks / (bench.ctr / f.fatigue));
+
+    const factors = {
+      objective: 1 / trapMult,
+      location: setup.cpl,
+      audience: f.audience * f.setup,
+      angles: f.angles,
+      learning: f.learning,
+      fragmentation: f.fragmentation,
+      fatigue: f.fatigue,
+      tracking: f.tracking,
+      landing: f.landing,
+      seasonality: f.seasonality,
+      market: market * noise,
+    };
+
+    return {
+      ...base,
+      spend,
+      clicks,
+      impressions,
+      trueLeads: purchases,
+      reportedLeads: reported,
+      jobs: purchases,
+      valueUnits: gross / econ.breakeven,
+      revenue,
+      gross,
+      gross12: gross,
+      setupKind: setup.kind,
+      source: setup.source,
+      usesPixel: setup.usesPixel,
+      expectedEvents,
+      learningProgress: learning.progress,
+      learningLimited: learning.limited,
+      modifierProduct: product,
+      clampedProduct: clamped,
+      factors,
+    };
+  });
 }
 
 function setupSignature(a) {
@@ -218,7 +425,7 @@ function sourceAffinity(source, az) {
   return keys.reduce((t, k) => t + (az[k] ?? 0), 0) / keys.length;
 }
 
-/** Reported / true conversions for a setup given the effective tracking defects (9.4). */
+/** Reported / true conversions for a lead setup given the effective tracking defects (9.4). */
 export function reportingFactor(setup, defects) {
   let f = 1;
   if (setup.usesPixel) {

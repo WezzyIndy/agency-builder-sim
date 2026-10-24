@@ -4,21 +4,18 @@
 // agency P&L (12).
 //
 //   Ad score = 40% Performance + 30% Best-practice + 30% Satisfaction
-//   Performance = 100 x min(1, Business target / quality-adjusted true CPL)
+//   Performance = 100 x min(1, Business target / value-adjusted true cost per result)
 //   Best-practice = share of applicable rubric checks passed
 //   Satisfaction = mean weekly Satisfaction
 //
 // A correct walk-away (declining an unviable brief) scores 100 / 100 / 100.
 
 import { safeDiv, sum, mean } from './math.js';
-import { briefCloseRate } from './brief.js';
-import { qualityAdjustedCpl } from './satisfaction.js';
-import { resolveLeadSetup, goalOptions, eventOptions, needsEvent } from './metaRules.js';
-import { metaLeads } from './benchmarks.js';
-import { maxAdSets } from './week.js';
+import { valueCpl } from './satisfaction.js';
+import { resolveSetup, objectiveForGoal, goalOptions, eventOptions, needsEvent } from './metaRules.js';
+import { maxAdSets, briefBench } from './week.js';
 import { isProhibited, angleFlag } from './policy.js';
 import { contentFor } from '../content/index.js';
-import { BUSINESS_BENCHMARKS } from '../config/benchmarks.js';
 import { WEEKS_PER_MONTH } from '../config/economics.js';
 import { TUNABLES } from '../config/tunables.js';
 
@@ -39,13 +36,13 @@ function spendShare(weeks, predicate) {
 }
 
 /** Expected optimization events per week for a goal/event choice at this ad set's spend. */
-function expectedEvents(cfg, spend, benchCpl) {
-  const s = resolveLeadSetup(cfg);
-  return (spend / (benchCpl * s.cpl)) * s.eventsPerLead;
+function expectedEvents(cfg, spend, benchCost, goal) {
+  const s = resolveSetup(cfg, goal);
+  return (spend / (benchCost * s.cpl)) * s.eventsPerLead;
 }
 
-/** Is the chosen goal/event within tolerance of the option closest to 50 events/week? */
-function goalChoiceOk(cfg, spend, benchCpl, ctx) {
+/** Is the chosen goal/event within tolerance of the real-result option closest to 50 events/week? */
+function goalChoiceOk(cfg, spend, benchCost, ctx, goal) {
   const goals = goalOptions(cfg.objective, cfg.location, ctx).filter((g) => g.available);
   const candidates = [];
   for (const g of goals) {
@@ -55,8 +52,9 @@ function goalChoiceOk(cfg, spend, benchCpl, ctx) {
       }
     } else candidates.push({ ...cfg, goal: g.id, event: null });
   }
-  const dist = (c) => Math.abs(expectedEvents(c, spend, benchCpl) - TUNABLES.learning.eventsToExit);
-  const best = Math.min(...candidates.map(dist));
+  const dist = (c) => Math.abs(expectedEvents(c, spend, benchCost, goal) - TUNABLES.learning.eventsToExit);
+  const real = candidates.filter((c) => resolveSetup(c, goal).kind !== 'trap');
+  const best = Math.min(...(real.length ? real : candidates).map(dist));
   return dist(cfg) <= best + GOAL_TOLERANCE_EVENTS;
 }
 
@@ -70,9 +68,10 @@ export function computeRubric(state) {
   const o = state.onboarding;
   const brief = state.brief;
   const weeks = state.weeks;
-  const isMedspa = state.businessId === 'medspa';
   const content = contentFor(state.businessId);
-  const bench = metaLeads(BUSINESS_BENCHMARKS[state.businessId].meta);
+  const goal = brief.goal;
+  const isSales = goal === 'sales';
+  const bench = briefBench(brief);
   const ctx = {
     dataRestricted: Boolean(brief.hidden.defects.dataRestricted),
     crmFixed: !brief.hidden.defects.noCrm || Boolean(o.fixed.crm),
@@ -80,11 +79,13 @@ export function computeRubric(state) {
   };
 
   // Onboarding
-  const tracking = ['pixel', 'capi', 'calls', 'crm'];
-  const unaudited = tracking.filter((c) => !o.audited[c]);
+  const tracking = content.checks.filter((c) => c.tracking);
+  const unaudited = tracking.filter((c) => !o.audited[c.id]);
   checks.push(
     check('audit', 'Onboarding', 'Tracking audited before launch', unaudited.length === 0,
-      unaudited.length ? `Skipped: ${unaudited.join(', ')}. You launched without knowing what the platform could see.` : 'Pixel, Conversions API, call tracking, and CRM all checked.'),
+      unaudited.length
+        ? `Skipped: ${unaudited.map((c) => c.title).join(', ')}. You launched without knowing what the platform could see.`
+        : `${tracking.map((c) => c.title).join(', ')}: all checked.`),
   );
   const critical = content.checks.filter((c) => c.critical);
   const missed = critical.filter((c) => {
@@ -95,11 +96,13 @@ export function computeRubric(state) {
     check('critical', 'Onboarding', 'Critical defects fixed or disclosed', missed.length === 0,
       missed.length ? `${missed.map((c) => c.title).join(' and ')} went into launch unfixed and undisclosed.` : 'Every critical defect was fixed or disclosed.'),
   );
-  if (isMedspa) {
+  if (content.checks.some((c) => c.id === 'data_source')) {
     checks.push(
       check('data_source', 'Onboarding', 'Data-source category checked', Boolean(o.audited.data_source),
         o.audited.data_source ? 'You checked whether Meta restricted the site\'s event sharing.' : 'You never checked whether Meta restricted this health site\'s events.'),
     );
+  }
+  if (content.naming) {
     checks.push(
       check('naming', 'Onboarding', 'Neutral event and audience names', o.naming === 'neutral',
         o.naming === 'neutral' ? 'Neutral names keep custom conversions and audiences live.' : 'Sensitive names like "botox_booked" get custom conversions and audiences disabled.'),
@@ -121,34 +124,48 @@ export function computeRubric(state) {
       ['angles', 'Angle testing is deliberate'],
     ]) checks.push(na(id, 'Meta', label));
   } else {
-    const objShare = spendShare(weeks, (c) => c.objective === 'leads');
+    const objective = objectiveForGoal(goal);
+    const objShare = spendShare(weeks, (c) => c.objective === objective);
     checks.push(
       check('objective', 'Meta', 'Objective matches business goal', objShare >= 0.9,
-        objShare >= 0.9 ? 'Leads objective for a leads client.' : 'Spend went to an objective that doesn\'t optimize for leads. Cheap clicks and engagement don\'t book appointments.'),
+        objShare >= 0.9
+          ? isSales ? 'Sales objective for an online store.' : 'Leads objective for a leads client.'
+          : isSales
+            ? 'Spend went to an objective that doesn\'t optimize for purchases. Clicks, likes, and email sign-ups don\'t pay for inventory.'
+            : 'Spend went to an objective that doesn\'t optimize for leads. Cheap clicks and engagement don\'t book appointments.'),
     );
     const fits = (c) => {
-      const s = resolveLeadSetup(c);
+      const s = resolveSetup(c, goal);
       if (s.kind === 'trap') return false;
       if (s.source === 'instantVolume' || s.source.includes('instantVolume')) return s.qualified;
       return true;
     };
     const locShare = spendShare(weeks, fits);
     checks.push(
-      check('location', 'Meta', 'Conversion location fits lead handling', locShare >= 0.9,
-        locShare >= 0.9 ? 'Conversion location matched how the client books.' : 'Default instant forms with no qualifying questions or CRM feedback: cheap leads that don\'t close.'),
+      check('location', 'Meta', isSales ? 'Conversion location sends buyers to the store' : 'Conversion location fits lead handling', locShare >= 0.9,
+        locShare >= 0.9
+          ? isSales ? 'Ads sent shoppers to the website, where they can buy.' : 'Conversion location matched how the client books.'
+          : isSales
+            ? 'Spend went to a setup that doesn\'t optimize for purchases on the store.'
+            : 'Default instant forms with no qualifying questions or CRM feedback: cheap leads that don\'t close.'),
     );
     const goalShare = spendShare(weeks, (c, w) => {
       const r = w.adSets.find((x) => x.id === c.id);
-      return resolveLeadSetup(c).kind === 'lead' && goalChoiceOk(c, r.spend, bench.cpl, ctx);
+      return resolveSetup(c, goal).kind !== 'trap' && goalChoiceOk(c, r.spend, bench.cost, ctx, goal);
     });
     checks.push(
       check('goal', 'Meta', 'Goal and event fit the budget', goalShare >= 0.9,
-        goalShare >= 0.9 ? 'You optimized for the highest-volume real lead event the budget can feed.' : 'The goal or event was too deep (or too shallow) for this budget. Aim for the real lead event with volume closest to 50 a week.'),
+        goalShare >= 0.9
+          ? isSales ? 'You optimized for the purchase-path event the budget can feed: add to cart or initiate checkout when purchases are under 50 a week.' : 'You optimized for the highest-volume real lead event the budget can feed.'
+          : isSales
+            ? 'The event was too deep for this budget. Under about 50 purchases a week, optimize for add to cart or initiate checkout so Meta has enough signal.'
+            : 'The goal or event was too deep (or too shallow) for this budget. Aim for the real lead event with volume closest to 50 a week.'),
     );
-    const over = weeks.filter((w) => w.config.filter((c) => !c.paused).length > maxAdSets(w.weeklyBudget, bench.cpl));
+    const unit = isSales ? 'cost per purchase' : 'cost per lead';
+    const over = weeks.filter((w) => w.config.filter((c) => !c.paused).length > maxAdSets(w.weeklyBudget, bench.cost));
     checks.push(
       check('adsets', 'Meta', 'Ad set count fits the budget', over.length === 0,
-        over.length ? `Week ${over[0].week}: more ad sets than a ${Math.round(over[0].weeklyBudget)}/week budget can feed. The limit is max(1, floor(weekly budget / (10 x cost per lead))).` : 'One ad set, consolidated signal.'),
+        over.length ? `Week ${over[0].week}: more ad sets than a ${Math.round(over[0].weeklyBudget)}/week budget can feed. The limit is max(1, floor(weekly budget / (10 x ${unit}))).` : 'One ad set, consolidated signal.'),
     );
     const byAdSet = {};
     for (const e of state.edits.filter((x) => !x.fix)) (byAdSet[e.adSetId] ||= new Set()).add(e.week);
@@ -168,7 +185,7 @@ export function computeRubric(state) {
         tooMany ? `Week ${tooMany.week}: more angles in one ad set than the budget can read. Test two at most.` : 'Two angles or fewer per ad set.'),
     );
   }
-  if (isMedspa) {
+  if (content.hasPolicyLayer) {
     const prohibitedWeek = weeks.find((w) => w.config.some((c) => !c.paused && c.angles.some((id) => isProhibited(angleFlag(state.businessId, id)))));
     checks.push(
       check('policy', 'Meta', 'No prohibited-flag copy', !prohibitedWeek,
@@ -208,34 +225,43 @@ export function campaignTotals(state) {
   const trueLeads = sum(weeks.map((w) => w.totals.trueLeads));
   const reportedLeads = sum(weeks.map((w) => w.totals.reportedLeads));
   const jobs = sum(weeks.map((w) => w.totals.jobs));
-  const closeRate = briefCloseRate(state.brief);
-  return {
+  const valueUnits = sum(weeks.map((w) => w.totals.valueUnits));
+  const revenue = sum(weeks.map((w) => w.totals.revenue));
+  const out = {
     spend,
     trueLeads,
     reportedLeads,
     jobs,
+    valueUnits,
+    revenue,
+    gross: sum(weeks.map((w) => w.totals.gross)),
+    gross12: sum(weeks.map((w) => w.totals.gross12)),
     trueCpl: safeDiv(spend, trueLeads),
     platformCpl: safeDiv(spend, reportedLeads),
-    qaCpl: qualityAdjustedCpl(spend, jobs, closeRate),
+    qaCpl: valueCpl(spend, valueUnits),
     realizedClose: safeDiv(jobs, trueLeads),
+    roas: safeDiv(revenue, spend),
   };
+  if (state.brief.econ.pools) {
+    out.replacementLeads = sum(weeks.map((w) => w.totals.replacementLeads || 0));
+    out.replacementJobs = sum(weeks.map((w) => w.totals.replacementJobs || 0));
+    out.serviceLeads = trueLeads - out.replacementLeads;
+  }
+  return out;
 }
 
 function clientProfit(state, t) {
-  const e = state.brief.econ;
-  const margin = e.margin * state.marginMult;
   const months = state.weeks.length / WEEKS_PER_MONTH;
   const feePaid = state.fee.monthly * months;
-  const revenue = t.jobs * e.firstJob;
-  const revenue12 = t.jobs * e.valuePerCustomer;
+  const gross = t.gross * state.marginMult;
+  const gross12 = t.gross12 * state.marginMult;
   return {
     feePaid,
-    revenue,
-    revenue12,
-    afterFee: revenue * margin - t.spend - feePaid,
-    adsOnly: revenue * margin - t.spend,
-    afterFee12: revenue12 * margin - t.spend - feePaid,
-    adsOnly12: revenue12 * margin - t.spend,
+    revenue: t.revenue,
+    afterFee: gross - t.spend - feePaid,
+    adsOnly: gross - t.spend,
+    afterFee12: gross12 - t.spend - feePaid,
+    adsOnly12: gross12 - t.spend,
   };
 }
 

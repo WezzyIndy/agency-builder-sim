@@ -322,7 +322,62 @@ export function resolveLeadSetup(adSet) {
   return trap(T.traps.trafficConv, 1, 'unknown');
 }
 
-/** Is this setup the right objective for a leads business? */
-export function objectiveFitsLeads(adSet) {
-  return adSet.objective === 'leads';
+/**
+ * Maps a setup to simulation multipliers for a SALES (ecomm) business, in the
+ * same shape as resolveLeadSetup so the week engine and rubric share code.
+ *   cpl            structural cost-per-purchase multiplier (inside the clamp)
+ *   eventsPerLead  optimization events per true purchase: shallower events fire more often
+ *   needsPurchase  optimizes on the purchase event, so a missing purchase event starves it
+ *   aovMult        order value lift (Value goal)
+ */
+export function resolveSalesSetup(adSet) {
+  const E = TUNABLES.ecomm;
+  const T = TUNABLES;
+  const { objective, location, goal, event } = adSet;
+  const sale = (extra = {}) => ({
+    kind: 'sale',
+    source: 'shop',
+    cpl: 1,
+    close: 1,
+    conv: 1,
+    cpc: 1,
+    usesPixel: true,
+    qualified: false,
+    eventsPerLead: 1,
+    needsPurchase: true,
+    aovMult: 1,
+    ...extra,
+  });
+  const trap = (conv, cpc, optimizesFor) => ({ ...sale(), kind: 'trap', conv, cpc, usesPixel: false, needsPurchase: false, eventsPerLead: 50, optimizesFor });
+
+  if (objective === 'awareness') return trap(E.traps.awarenessConv, 0.5, 'reach');
+  if (objective === 'traffic') return trap(E.traps.trafficConv, T.traps.trafficCpc, 'clicks');
+  if (objective === 'engagement') return trap(E.traps.engagementConv, 0.6, 'engagement');
+  if (objective === 'leads') return { ...trap(E.traps.leadsConv, 1, 'leads'), eventsPerLead: 3 };
+  if (objective === 'sales') {
+    if (goal === 'calls') return trap(E.traps.callsConv, 1, 'calls');
+    if (location === 'messaging_apps' && ['conversions', 'purchases_messaging'].includes(goal)) {
+      return sale({ cpl: E.messaging, usesPixel: false, needsPurchase: false });
+    }
+    if (goal === 'value') return sale({ cpl: E.value.cpl, aovMult: E.value.aov });
+    if (goal === 'conversions') {
+      if (location === 'catalog') return sale();
+      const ev = E.events[event];
+      if (ev) return sale({ cpl: ev.cpl, eventsPerLead: ev.eventsPerPurchase, needsPurchase: event === 'purchase' });
+      // A lead-type event on a store optimizes for sign-ups, not buyers.
+      return { ...trap(E.traps.leadEventConv, 1, 'leads'), eventsPerLead: 3 };
+    }
+    return trap(E.traps.trafficConv, T.traps.trafficCpc, 'clicks');
+  }
+  return trap(E.traps.trafficConv, 1, 'unknown');
+}
+
+/** The objective a business's goal calls for. */
+export function objectiveForGoal(goal) {
+  return goal === 'sales' ? 'sales' : 'leads';
+}
+
+/** Setup resolution for the business's goal (leads or sales). */
+export function resolveSetup(adSet, goal) {
+  return goal === 'sales' ? resolveSalesSetup(adSet) : resolveLeadSetup(adSet);
 }

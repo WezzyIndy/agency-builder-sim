@@ -21,7 +21,7 @@ import { stream } from './rng.js';
 import { clamp, clone, sum } from './math.js';
 import { generateBrief, briefCloseRate } from './brief.js';
 import { simulateWeek } from './week.js';
-import { validateAdSet, resolveLeadSetup } from './metaRules.js';
+import { validateAdSet, resolveSetup } from './metaRules.js';
 import { resultsScore, satisfactionScore, checkFailure } from './satisfaction.js';
 import { computeFinal } from './scoring.js';
 import { isProhibited, angleFlag } from './policy.js';
@@ -30,7 +30,8 @@ import { TUNABLES } from '../config/tunables.js';
 import { DEFAULT_TARGET_HOURLY } from '../config/fees.js';
 
 const T = TUNABLES;
-export const RUN_VERSION = 1;
+// v2 (M4): weeks record value units, revenue, and gross profit; v1 saves are discarded.
+export const RUN_VERSION = 2;
 
 export class RunError extends Error {}
 const fail = (msg) => {
@@ -39,8 +40,6 @@ const fail = (msg) => {
 
 /** Checks the client blocks when they refuse website and tracking access (red flag). */
 const NO_ACCESS_BLOCKS = ['pixel', 'capi', 'landing', 'crm'];
-/** Defects that change the platform's signal; fixing one mid-campaign resets learning. */
-const DEFECT_BY_CHECK = { pixel: 'doubleFire', capi: 'noCapi', calls: 'noCallTracking', crm: 'noCrm', landing: 'landingWeak' };
 
 export function createRun({ seed, businessId = 'medspa', level = 1, realism = 3, mode = 'ads', forceClass = null, targetHourly = DEFAULT_TARGET_HOURLY }) {
   if (!Number.isInteger(realism) || realism < 1 || realism > 5) fail('Realism must be 1-5');
@@ -100,8 +99,8 @@ export function checkHasDefect(state, checkId) {
 /** Tracking defects after onboarding and mid-campaign fixes. */
 export function effectiveDefects(state) {
   const d = { ...state.brief.hidden.defects };
-  for (const [check, key] of Object.entries(DEFECT_BY_CHECK)) {
-    if (state.onboarding.fixed[check]) d[key] = false;
+  for (const c of contentFor(state.businessId).checks) {
+    if (c.fixHours && state.onboarding.fixed[c.id]) d[c.defectKey] = false;
   }
   for (const key of Object.keys(state.midFixed)) d[key] = false;
   return d;
@@ -185,7 +184,7 @@ function editIsFix(state, adSet) {
   const last = state.weeks[state.weeks.length - 1];
   const lastResult = last?.adSets.find((x) => x.id === adSet.id);
   if (lastResult?.disapproved) return true;
-  return resolveLeadSetup(adSet).kind === 'trap';
+  return resolveSetup(adSet, state.brief.goal).kind === 'trap';
 }
 
 function recordEdit(state, adSet, kind, fix = null) {
@@ -332,7 +331,7 @@ const HANDLERS = {
     requireStatus(state, 'running');
     if (state.pendingEvent) fail('Respond to the client first');
     const week = state.weekIndex + 1;
-    const oldWrong = state.campaign.adSets.some((a) => resolveLeadSetup(a).kind === 'trap');
+    const oldWrong = state.campaign.adSets.some((a) => resolveSetup(a, state.brief.goal).kind === 'trap');
     state.campaign = buildCampaign(state, campaign, week);
     state.campaignCount++;
     for (const a of state.campaign.adSets) {
@@ -538,7 +537,7 @@ function applyEffect(state, fx) {
       break;
     case 'fixDefect':
       state.midFixed[fx.defect] = true;
-      for (const a of adSets) if (resolveLeadSetup(a).usesPixel) recordEdit(state, a, 'tracking', true);
+      for (const a of adSets) if (resolveSetup(a, state.brief.goal).usesPixel) recordEdit(state, a, 'tracking', true);
       break;
     case 'endRun':
       state.endReason = fx.reason;
@@ -593,7 +592,7 @@ function simulateAndAdvance(state, update) {
   if (defects.doubleFire && r.adSets.some((a) => a.usesPixel && a.spend > 0)) state.corruptWeeks++;
   for (const a of r.adSets) {
     const setup = campaign.adSets.find((x) => x.id === a.id);
-    if (a.spend > 0 && setup && resolveLeadSetup(setup).qualified) state.qualifiedWeeks[a.id] = (state.qualifiedWeeks[a.id] || 0) + 1;
+    if (a.spend > 0 && setup && resolveSetup(setup, brief.goal).qualified) state.qualifiedWeeks[a.id] = (state.qualifiedWeeks[a.id] || 0) + 1;
   }
 
   const entry = {
@@ -610,7 +609,7 @@ function simulateAndAdvance(state, update) {
     event: state.eventLog.find((e) => e.week === week - 1) || null,
   };
   const weeks = [...state.weeks, entry];
-  const results = resultsScore(weeks, brief.expectation, closeRate);
+  const results = resultsScore(weeks, brief.expectation);
 
   // Relationship: disapprovals, last week's spin surfacing, this week's update.
   let rel = state.relationship;
@@ -634,7 +633,7 @@ function simulateAndAdvance(state, update) {
   state.hours.weekly.push(T.hours.base + T.hours.perAdSet * activeAdSets + T.hours.perEdit * entry.edits + state.pendingHours);
   state.pendingHours = 0;
 
-  const failure = checkFailure({ weeks: state.weeks, satisfactionHistory: state.satisfactionHistory, brief, closeRate });
+  const failure = checkFailure({ weeks: state.weeks, satisfactionHistory: state.satisfactionHistory, brief });
   if (failure) {
     state.endReason = failure;
     state.status = 'final';
@@ -657,8 +656,14 @@ function eventConditions(state, entry, closeRate) {
   const flags = entry.totals.disapprovedFlags;
   const prohibitedNow = flags.some((f) => isProhibited(f) || f === 'under_18');
   const reportedRatio = entry.totals.trueLeads > 0 ? entry.totals.reportedLeads / entry.totals.trueLeads : 0;
+  const isSales = state.brief.goal === 'sales';
+  const t = entry.totals;
   return {
-    junkLeads: leads >= 6 && jobs / leads < T.junkLeadsRatio * closeRate,
+    junkLeads: !isSales && leads >= 6 && jobs / leads < T.junkLeadsRatio * closeRate,
+    // Ecomm: the platform sees a fraction of real orders (missing purchase event).
+    purchaseGap: isSales && t.trueLeads >= 3 && reportedRatio <= 0.4 && !state.onboarding.disclosed.pixel,
+    // HVAC: the last two weeks brought mostly service calls.
+    serviceHeavy: Boolean(state.brief.econ.pools) && last2.length === 2 && sum(last2.map((w) => w.totals.replacementLeads ?? 0)) / Math.max(1, leads) < 0.15 && leads >= 6,
     reportingGap: reportedRatio >= 1.6 && entry.totals.reportedLeads >= 4 && !state.onboarding.disclosed.pixel,
     disapprovedProhibited: prohibitedNow,
     disapprovedBeforeAfter: !prohibitedNow && flags.includes('before_after'),

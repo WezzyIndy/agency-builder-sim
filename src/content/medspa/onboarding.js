@@ -6,10 +6,12 @@
 // audit and fix everything, so prioritizing is part of the skill.
 //
 // defectKey maps to brief.hidden.defects (or a special case in run.js).
+// tracking: true marks the checks the rubric expects audited before launch.
 
 export const ONBOARDING_CHECKS = [
   {
     id: 'pixel',
+    tracking: true,
     title: 'Pixel and lead event',
     auditHours: 0.5,
     fixHours: 1.5,
@@ -21,6 +23,7 @@ export const ONBOARDING_CHECKS = [
   },
   {
     id: 'capi',
+    tracking: true,
     title: 'Conversions API',
     auditHours: 0.5,
     fixHours: 2,
@@ -32,6 +35,7 @@ export const ONBOARDING_CHECKS = [
   },
   {
     id: 'calls',
+    tracking: true,
     title: 'Call tracking',
     auditHours: 0.5,
     fixHours: 1.5,
@@ -43,6 +47,7 @@ export const ONBOARDING_CHECKS = [
   },
   {
     id: 'crm',
+    tracking: true,
     title: 'CRM and offline feedback',
     auditHours: 0.5,
     fixHours: 2.5,

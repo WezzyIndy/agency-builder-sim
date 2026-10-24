@@ -10,8 +10,7 @@
 import { contentFor } from '../content/index.js';
 import { computeCounterfactual } from './counterfactual.js';
 import { sum } from './math.js';
-import { metaLeads } from './benchmarks.js';
-import { BUSINESS_BENCHMARKS } from '../config/benchmarks.js';
+import { briefBench } from './week.js';
 
 const HURT_THRESHOLD = Math.log(1.08);
 
@@ -103,16 +102,18 @@ function difficultyText(brief) {
   if (brief.classSource === 'red_flag') return `Unviable: the client ${flags[brief.redFlag]}. The intake notes hinted at it. Walking away was the right call.`;
   if (brief.classSource === 'complications') return `Hard: good economics, but ${brief.complications.map((c) => names[c]).join(' and ')}.`;
   if (brief.class === 'achievable') return 'Achievable: the economics leave room, and nothing structural was stacked against you.';
-  return `${brief.class === 'hard' ? 'Hard' : 'Unviable'}: after your fee, the client\'s target cost per lead is ${brief.ratio.toFixed(2)}x the benchmark.`;
+  const unit = brief.goal === 'sales' ? 'purchase' : 'lead';
+  return `${brief.class === 'hard' ? 'Hard' : 'Unviable'}: after your fee, the client\'s target cost per ${unit} is ${brief.ratio.toFixed(2)}x the benchmark.`;
 }
 
 /** Explains an expectation below the whole benchmark range: no setup reliably meets it. */
 function expectationNote(state) {
-  const range = metaLeads(BUSINESS_BENCHMARKS[state.businessId].meta).cplRange;
+  const range = briefBench(state.brief).range;
   const ex = state.brief.expectation;
   if (ex.cost >= range.min) return null;
   const money = (x) => `$${x.toFixed(2)}`;
-  return `The client expected ${money(ex.cost)} per lead, below the entire published benchmark range (${money(range.min)}-${money(range.max)}). No setup reliably beats that. In a pitch you would reset that expectation before taking the fee (pitch mode arrives in a later build); in this mode, honest weekly updates are your only lever.`;
+  const unit = state.brief.goal === 'sales' ? 'purchase' : 'lead';
+  return `The client expected ${money(ex.cost)} per ${unit}, below the entire published benchmark range (${money(range.min)}-${money(range.max)}). No setup reliably beats that. In a pitch you would reset that expectation before taking the fee (pitch mode arrives in a later build); in this mode, honest weekly updates are your only lever.`;
 }
 
 export function finalDebrief(state) {

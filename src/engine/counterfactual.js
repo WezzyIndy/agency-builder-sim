@@ -12,7 +12,7 @@
 
 import { createRun, tryDecision, applyDecision } from './run.js';
 import { clone, mean } from './math.js';
-import { resolveLeadSetup } from './metaRules.js';
+import { resolveSetup } from './metaRules.js';
 import { isProhibited, angleFlag } from './policy.js';
 import { contentFor } from '../content/index.js';
 
@@ -25,8 +25,9 @@ function compliantAngles(businessId, angles) {
   return out.slice(0, Math.max(1, Math.min(2, ok.length || 1)));
 }
 
-/** The planned lead setup a best-practice player would use for this brief. */
+/** The planned setup a best-practice player would use for this brief. */
 function plannedSetup(state) {
+  if (state.brief.goal === 'sales') return { objective: 'sales', location: 'website', goal: 'conversions', event: 'initiate_checkout', formType: null };
   const o = state.onboarding;
   const restricted = state.brief.hidden.defects.dataRestricted;
   const landingBad = state.brief.hidden.defects.landingWeak && !o.fixed.landing;
@@ -54,20 +55,24 @@ function insertBeforeFinish(decisions, extra) {
 function candidatesFor(state) {
   const plan = plannedSetup(state);
   const content = contentFor(state.businessId);
+  const isSales = state.brief.goal === 'sales';
+  const objectiveName = isSales ? 'Sales' : 'Leads';
+  const locationLabel = isSales ? 'the website' : plan.location === 'website' ? 'a website lead form' : plan.location === 'calls' ? 'calls' : 'higher-intent instant forms';
   const bestResponse = (eventId) => content.events.find((e) => e.id === eventId).responses.reduce((a, b) => (b.score > a.score ? b : a)).id;
   return {
     objective: {
-      label: 'Run the Leads objective instead',
+      label: `Run the ${objectiveName} objective instead`,
       transform: (ds) => mapCampaigns(ds, (a) => ({ ...a, ...plan })),
     },
     location: {
-      label: `Use ${plan.location === 'website' ? 'a website lead form' : plan.location === 'calls' ? 'calls' : 'higher-intent instant forms'} as the conversion location`,
-      transform: (ds) => mapCampaigns(ds, (a) => (a.objective === 'leads' ? { ...a, location: plan.location, goal: plan.goal, event: plan.event, formType: plan.formType } : a)),
+      label: `Use ${locationLabel} as the conversion location`,
+      transform: (ds) => mapCampaigns(ds, (a) => (a.objective === plan.objective ? { ...a, location: plan.location, goal: plan.goal, event: plan.event, formType: plan.formType } : a)),
     },
     goal: {
-      label: 'Optimize for the highest-volume real lead event',
+      label: isSales ? 'Optimize for initiate checkout until purchases pass 50 a week' : 'Optimize for the highest-volume real lead event',
       transform: (ds) =>
         mapCampaigns(ds, (a) => {
+          if (isSales) return a.objective === 'sales' ? { ...a, location: 'website', goal: 'conversions', event: 'initiate_checkout' } : a;
           if (a.objective !== 'leads') return a;
           if (a.location === 'website') return { ...a, goal: 'leads', event: 'lead' };
           if (a.location === 'instant_forms') return { ...a, goal: 'leads' };
@@ -114,7 +119,7 @@ function candidatesFor(state) {
     },
     audit: {
       label: 'Audit the tracking before launch',
-      transform: (ds) => insertBeforeFinish(ds, ['pixel', 'capi', 'calls', 'crm'].filter((c) => !state.onboarding.audited[c]).map((check) => ({ type: 'audit', check }))),
+      transform: (ds) => insertBeforeFinish(ds, content.checks.filter((c) => c.tracking && !state.onboarding.audited[c.id]).map((c) => ({ type: 'audit', check: c.id }))),
     },
     critical: {
       label: 'Fix or disclose the critical tracking defect',
@@ -243,7 +248,7 @@ export function computeCounterfactual(state) {
   return { found: true, checkId: best.checkId, label: best.label, before, after: best.after, delta, tried: ids.length };
 }
 
-/** For tests and debugging: is this ad set config a trap for a leads business? */
-export function isTrap(adSet) {
-  return resolveLeadSetup(adSet).kind === 'trap';
+/** For tests and debugging: is this ad set config a trap for the business's goal? */
+export function isTrap(adSet, goal = 'leads') {
+  return resolveSetup(adSet, goal).kind === 'trap';
 }

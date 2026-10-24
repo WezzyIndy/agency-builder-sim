@@ -64,6 +64,25 @@ export const TUNABLES = {
   // Workable-but-weaker objective/goal pairs (cost multipliers).
   weaker: { salesLeadEvent: 1.15, engagementLead: 1.2, trafficCalls: 1.1, conversationsGoal: 1.25 },
 
+  // Ecomm (boutique apparel). Shallower events fire more often per purchase, which
+  // helps a small budget learn, at a modest cost-per-purchase premium (7.4).
+  ecomm: {
+    events: {
+      purchase: { cpl: 1.0, eventsPerPurchase: 1 },
+      initiate_checkout: { cpl: 1.05, eventsPerPurchase: 2.5 },
+      add_to_cart: { cpl: 1.12, eventsPerPurchase: 5 },
+    },
+    value: { cpl: 1.12, aov: 1.1 },
+    messaging: 1.3,
+    traps: { trafficConv: 0.12, awarenessConv: 0.04, engagementConv: 0.07, leadsConv: 0.1, leadEventConv: 0.2, callsConv: 0.05 },
+    missingPurchaseReported: 0.05, // reported / true purchases with no purchase event
+    missingPurchaseStarve: 1.6, // purchase-optimized delivery with nothing to learn from
+    aovSd: 0.06, // weekly order-value wobble
+  },
+
+  // HVAC lead mix (9.2): replacement odds multipliers by lead source. Angles carry their own.
+  hvacMix: { call: 1.25, form: 1.0, instantHigh: 0.95, instantVolume: 0.75, messaging: 0.85 },
+
   // Tracking (9.4)
   tracking: {
     doubleFire: 2.2, // reported / true
