@@ -18,8 +18,8 @@
 // Every week also records value units: true results counted at the brief's
 // expected value per result (gross profit / breakeven). For a single-pool
 // lead business that is jobs / close rate, the client's own way of counting
-// leads; for HVAC it weights replacement jobs by their value; for ecomm it
-// is purchases weighted by order value. Scores and satisfaction use it.
+// leads; for HVAC it weights each pool's leads by expected close and value;
+// for ecomm it is purchases weighted by order value. Scores and satisfaction use it.
 //
 // Learning is continuous (9.5) and normalized to the reference progress of
 // one ad set at the typical L1 budget (KTD5), so best practice at a typical
@@ -77,10 +77,43 @@ function angleResonance(angleIds, audienceOption, ctx) {
   return 0.7 * best + 0.3 * avg;
 }
 
-/** Replacement share of an HVAC ad set's leads: the brief's base mix shifted by angles and lead source. */
-export function replacementShare(adSet, setup, brief, weight = 1) {
+/**
+ * Lead-quality multiplier from an ad set's angles (geometric mean; angles without one count as 1).
+ * Angles that shift lead quality get a hidden per-client offset scaled by realism: for some
+ * clients the deal angle's leads do close, which is how unconventional choices win at realism 5.
+ */
+function angleCloseMult(angleIds, ctx) {
+  const angles = contentFor(ctx.brief.businessId).angles;
+  const sd = T.realism.resonanceSd[ctx.realism];
+  const logs = angleIds.map((id) => {
+    const idx = angles.findIndex((a) => a.id === id);
+    const close = angles[idx]?.close;
+    if (close === undefined) return 0;
+    const z = clamp(stream(ctx.seed, 'angleClose', idx).normal(0, 1), -2.5, 2.5);
+    return Math.log(close) + z * sd * T.angleCloseSdScale;
+  });
+  return Math.exp(sum(logs) / Math.max(1, logs.length));
+}
+
+/** Average price discount promised by an ad set's angles (ecomm). */
+function angleDiscount(angleIds, brief) {
   const angles = contentFor(brief.businessId).angles;
-  const logs = adSet.angles.map((id) => Math.log(angles.find((a) => a.id === id)?.mix ?? 1));
+  return sum(angleIds.map((id) => angles.find((a) => a.id === id)?.discount ?? 0)) / Math.max(1, angleIds.length);
+}
+
+/**
+ * Replacement share of an HVAC ad set's leads: the brief's base mix shifted by angles and lead
+ * source. Each angle's pull gets a hidden per-client offset scaled by realism.
+ */
+export function replacementShare(adSet, setup, ctx, weight = 1) {
+  const brief = ctx.brief;
+  const angles = contentFor(brief.businessId).angles;
+  const sd = T.realism.resonanceSd[ctx.realism] * T.angleCloseSdScale;
+  const logs = adSet.angles.map((id) => {
+    const idx = angles.findIndex((a) => a.id === id);
+    const z = clamp(stream(ctx.seed, 'angleMix', idx).normal(0, 1), -2.5, 2.5);
+    return Math.log(angles[idx]?.mix ?? 1) + z * sd;
+  });
   const angleMult = Math.exp(sum(logs) / Math.max(1, logs.length));
   const keys = setup.source.split('+');
   const sourceMult = Math.exp(sum(keys.map((k) => Math.log(T.hvacMix[k] ?? 1))) / keys.length);
@@ -189,7 +222,8 @@ function leadAdSets(ctx) {
     const affinitySd = T.realism.affinitySd[realism];
 
     // HVAC: the delivered lead mix sets the base cost per lead (replacement leads cost more).
-    const r = pooled ? replacementShare(adSet, setup, brief, w) : null;
+    // Mix is an odds multiplier, so the realism weight applies twice: sharp at realism 1, fuzzy at 5.
+    const r = pooled ? replacementShare(adSet, setup, ctx, w * w) : null;
     const baseCpl = pooled ? (1 - r) * bench.pools.service + r * bench.pools.replacement : bench.cost;
 
     // Non-benchmark cost modifiers (inside the clamp).
@@ -231,7 +265,9 @@ function leadAdSets(ctx) {
     const impressions = Math.round(clicks / ctr);
 
     // Lead-quality modifiers are non-benchmark modifiers too, so realism weights them the same way.
-    let closeMods = setup.close * T.speedToLead[ctx.speedToLead];
+    // Some angles pull bargain hunters: cheaper leads that close less often.
+    const angleClose = angleCloseMult(adSet.angles, ctx);
+    let closeMods = setup.close * angleClose * T.speedToLead[ctx.speedToLead];
     if (setup.usesPixel && corrupted) closeMods *= T.tracking.corruptClose;
     if (setup.qualified) {
       const qWeeks = (ctx.qualifiedWeeks && ctx.qualifiedWeeks[adSet.id]) || 0;
@@ -257,7 +293,14 @@ function leadAdSets(ctx) {
       revenue = serviceJobs * sv.firstJob + replacementJobs * rp.firstJob;
       gross = serviceJobs * sv.firstJob * sv.margin + replacementJobs * rp.firstJob * rp.margin;
       gross12 = serviceJobs * sv.valuePerCustomer * sv.margin + replacementJobs * rp.valuePerCustomer * rp.margin;
-      valueUnits = gross12 / econ.breakeven;
+      // Value units mostly count leads at their expected close rather than whole jobs: one
+      // replacement is worth ~12 leads, so judging purely on realized jobs would swing
+      // satisfaction on a single sale. A share of realized value keeps some of that luck.
+      const expected =
+        serviceLeads * closeFor(sv.closeRate) * sv.valuePerCustomer * sv.margin +
+        replacementLeads * closeFor(rp.closeRate) * rp.valuePerCustomer * rp.margin;
+      const rw = T.hvacRealizedWeight;
+      valueUnits = ((1 - rw) * expected + rw * gross12) / econ.breakeven;
       Object.assign(pools, { replacementShare: r, replacementLeads, serviceLeads, replacementJobs });
     } else {
       jobs = jobsRng.stochasticRound(trueLeads * closeFor(ctx.closeRate));
@@ -272,7 +315,7 @@ function leadAdSets(ctx) {
       objective: 1 / trapMult,
       location: setup.cpl / setup.close,
       audience: f.audience * f.setup,
-      angles: f.angles,
+      angles: f.angles / angleClose,
       learning: f.learning,
       fragmentation: f.fragmentation,
       fatigue: f.fatigue,
@@ -340,7 +383,10 @@ function salesAdSets(ctx) {
     const starved = setup.needsPurchase && d.missingPurchase;
 
     const f = commonFactors(ctx, adSet, week, { corruptedAudience: starved });
-    f.location = setup.cpl;
+    // Hidden per-client fit of each event / location, like lead-source affinity for lead businesses.
+    const fitKey = adSet.goal === 'conversions' && adSet.location !== 'catalog' ? adSet.event : `${adSet.location}:${adSet.goal}`;
+    const fitZ = clamp(stream(ctx.seed, 'salesFit', fitKey).normal(0, 1), -2.5, 2.5);
+    f.location = setup.cpl * Math.exp(fitZ * T.realism.affinitySd[realism]);
     f.landing = setup.usesPixel && d.landingWeak ? 1 / T.landingWeakCvr : 1;
     let tracking = 1;
     if (setup.usesPixel && d.noCapi) tracking /= T.tracking.noCapiCvr;
@@ -370,8 +416,10 @@ function salesAdSets(ctx) {
     const purchases = rng.stochasticRound((spend / cpa) * trapMult);
     const reported = rng.stochasticRound(purchases * reportFactor);
     const aov = econ.aov * setup.aovMult * rng.lognormalMult(E.aovSd);
-    const revenue = purchases * aov;
-    const gross = revenue * econ.margin;
+    // Discount angles cut the price, not the cost of goods: margin per order falls by the discount.
+    const discount = angleDiscount(adSet.angles, brief);
+    const revenue = purchases * aov * (1 - discount);
+    const gross = Math.max(0, purchases * aov * (econ.margin - discount));
     const cpc = bench.cpc * setup.cpc * market * f.fatigue;
     const clicks = Math.round(spend / cpc);
     const impressions = Math.round(clicks / (bench.ctr / f.fatigue));

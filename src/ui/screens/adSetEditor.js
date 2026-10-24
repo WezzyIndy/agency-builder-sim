@@ -77,7 +77,7 @@ export function adSetEditor(run, draft, { lockObjective = false, onChange }) {
           { onChange: (ev) => setAudience({ minAge: Number(ev.target.value) }, 'minAge'), 'aria-label': 'Minimum age' },
           c.minAges.map((m) => h('option', { value: m, selected: m === draft.audience.minAge }, `${m}+`)),
         ),
-        h('span', { class: 'muted tiny' }, 'Location: the client\'s service area'),
+        h('span', { class: 'muted tiny' }, run.brief.goal === 'sales' ? 'Location: where the store ships' : 'Location: the client\'s service area'),
       ),
     ),
     h(

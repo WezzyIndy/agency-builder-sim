@@ -7,6 +7,7 @@
 import { createRun, tryDecision } from '../engine/run.js';
 import { newSeed } from '../engine/rng.js';
 import { scoreRecord } from '../engine/scoring.js';
+import { PLAYABLE_BUSINESSES } from '../content/index.js';
 import { screenFor } from './flow.js';
 import { loadRun, saveRun, clearRun, loadScores, addScore, loadSettings, saveSettings, storageAvailable, clearAll } from './storage.js';
 import { h } from './dom.js';
@@ -60,15 +61,22 @@ const actions = {
     render();
     return true;
   },
+  /** Opens the business picker on the menu. */
   newRun() {
+    app.view = { ...app.view, screen: 'menu', debriefWeek: null, notice: null, picking: true };
+    render(true);
+  },
+  /** Starts a client for a business ('any' picks one at random). */
+  startRun(businessId) {
+    const id = businessId === 'any' ? PLAYABLE_BUSINESSES[Math.floor(Math.random() * PLAYABLE_BUSINESSES.length)] : businessId;
     app.run = createRun({
       seed: newSeed(),
-      businessId: 'medspa',
+      businessId: id,
       level: 1,
       realism: app.settings.realismDefault,
       targetHourly: app.settings.targetHourlyRate,
     });
-    app.view = { ...app.view, screen: null, debriefWeek: null, notice: null, draft: null, edit: null, finalCache: null };
+    app.view = { ...app.view, screen: null, debriefWeek: null, notice: null, draft: null, edit: null, adding: null, finalCache: null, picking: false };
     if (app.canSave) saveRun(app.run);
     render(true);
   },
@@ -85,6 +93,7 @@ const actions = {
   },
   toMenu() {
     app.view.screen = 'menu';
+    app.view.picking = false;
     app.view.debriefWeek = null;
     render(true);
   },

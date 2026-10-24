@@ -2,13 +2,13 @@
 //
 // Calibration harness CLI (spec 16).
 //
-//   node harness/run.js --business medspa [--n 1000] [--criteria all|campaign|mix|policy]
+//   node harness/run.js --business medspa|roofing|landscaping|cleaning|hvac|apparel|all [--n 1000] [--criteria all|campaign|mix|policy]
 //
 // Prints a pass/fail table and exits nonzero if any criterion fails.
 
 import { campaignCriteria, mixCriteria, policyCriteria } from './criteria.js';
 import { printTable } from './report.js';
-import { hasContent } from '../src/content/index.js';
+import { hasContent, PLAYABLE_BUSINESSES, contentFor } from '../src/content/index.js';
 
 function parseArgs(argv) {
   const args = { business: 'medspa', n: 1000, criteria: 'all', quiet: false };
@@ -26,12 +26,17 @@ function parseArgs(argv) {
 export function runHarness({ business, n, criteria, quiet, selfTestFail = false }) {
   const log = quiet ? () => {} : (m) => console.error(m);
   const rows = [];
+  const businesses = business === 'all' ? PLAYABLE_BUSINESSES : [business];
   if (criteria === 'all' || criteria === 'campaign') {
-    if (!hasContent(business)) throw new Error(`No playable content for ${business}; campaign criteria need it.`);
-    log(`Campaign criteria: ${business}, N=${n} per cell`);
-    rows.push(...campaignCriteria(business, n, log));
+    for (const b of businesses) {
+      if (!hasContent(b)) throw new Error(`No playable content for ${b}; campaign criteria need it.`);
+      log(`Campaign criteria: ${b}, N=${n} per cell`);
+      const r = campaignCriteria(b, n, log);
+      rows.push(...(businesses.length > 1 ? r.map((x) => ({ ...x, id: `${b}:${x.id}` })) : r));
+    }
   }
-  if (criteria === 'all' || criteria === 'policy') rows.push(...policyCriteria());
+  // The policy layer is med spa's (5.5).
+  if (criteria === 'policy' || (criteria === 'all' && businesses.some((b) => contentFor(b).hasPolicyLayer))) rows.push(...policyCriteria());
   if (criteria === 'all' || criteria === 'mix') rows.push(...mixCriteria());
   if (selfTestFail) rows.push({ id: 'self-test', label: 'Deliberate failure (--self-test-fail)', value: 1, threshold: '0', pass: false });
   return rows;

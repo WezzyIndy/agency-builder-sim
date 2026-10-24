@@ -58,13 +58,14 @@ export function renderOnboarding(app, actions) {
       h('p', { class: 'small' }, `${hours(o.hoursUsed)} used · ${hours(left)} left`),
     ),
     section('Tracking and setup', h('div', { class: 'stack' }, content.checks.map((c) => checkCard(app, actions, c)))),
-    section(
-      'Name your custom conversions and audiences',
-      h('p', { class: 'small muted' }, 'Meta disables custom conversions and audiences with sensitive health terms in their names.'),
-      o.naming
-        ? h('p', { class: 'small' }, `Using: ${content.naming.find((n) => n.id === o.naming).label}`)
-        : h('div', { class: 'row' }, content.naming.map((n) => button(`${n.label} · ${hours(n.hours)}`, () => actions.decide({ type: 'naming', choice: n.id }), 'secondary'))),
-    ),
+    content.naming &&
+      section(
+        'Name your custom conversions and audiences',
+        h('p', { class: 'small muted' }, 'Meta disables custom conversions and audiences with sensitive health terms in their names.'),
+        o.naming
+          ? h('p', { class: 'small' }, `Using: ${content.naming.find((n) => n.id === o.naming).label}`)
+          : h('div', { class: 'row' }, content.naming.map((n) => button(`${n.label} · ${hours(n.hours)}`, () => actions.decide({ type: 'naming', choice: n.id }), 'secondary'))),
+      ),
     stickyActions(
       h('div', { class: 'actions' }, button('Decline this client', () => actions.decide({ type: 'decline' }), 'secondary'), button('Finish onboarding', () => actions.decide({ type: 'finishOnboarding' }), 'primary')),
     ),

@@ -5,6 +5,32 @@ import { noticeBar } from './common.js';
 import { unlockProgress } from '../../engine/scoring.js';
 import { score } from '../format.js';
 import { HONEST_LIMIT } from '../../content/medspa/debrief.js';
+import { PLAYABLE_BUSINESSES } from '../../content/index.js';
+import { ECONOMICS } from '../../config/economics.js';
+import { BUSINESS_BLURBS } from '../terms.js';
+
+function businessPicker(actions) {
+  return h(
+    'section',
+    { class: 'card' },
+    h('h2', { class: 'card-title' }, 'Pick a client'),
+    h('p', { class: 'small muted' }, 'Each client is generated fresh: their economics, budget, tracking problems, and temperament.'),
+    h(
+      'div',
+      { class: 'stack' },
+      button('Surprise me', () => actions.startRun('any'), 'primary', { class: 'btn btn-primary btn-block' }),
+      PLAYABLE_BUSINESSES.map((id) =>
+        h(
+          'button',
+          { type: 'button', class: 'angle', onClick: () => actions.startRun(id) },
+          h('span', { class: 'angle-title' }, ECONOMICS[id].label),
+          h('span', { class: 'angle-copy' }, BUSINESS_BLURBS[id]),
+        ),
+      ),
+    ),
+    button('Cancel', () => actions.setView({ picking: false }), 'ghost'),
+  );
+}
 
 const MODES = [
   { id: 'ads', title: 'Ads Manager Only', text: 'Take a generated client with a preset expectation and fee. Onboard them, then run their Meta campaign.', live: true },
@@ -22,10 +48,11 @@ export function renderMenu(app, actions) {
     'div',
     { class: 'stack' },
     noticeBar(app, actions),
+    app.view.picking && businessPicker(actions),
     h(
       'section',
       { class: 'card hero' },
-      h('div', { class: 'eyebrow' }, 'Level 1 · Meta · Med spa'),
+      h('div', { class: 'eyebrow' }, 'Level 1 · Meta'),
       h('h1', {}, 'Run the account. Keep the client.'),
       h('p', { class: 'muted' }, 'You run a small agency. Each client is a generated small business with real-world economics. Set up their tracking, run their ads week by week, and keep them happy enough to stay.'),
       resumable &&
@@ -34,7 +61,7 @@ export function renderMenu(app, actions) {
           { class: 'notice accent' },
           `In progress: ${run.brief.name}, ${run.status === 'running' ? `week ${run.weekIndex + 1} of ${run.brief.campaignWeeks}` : run.status}.`,
         ),
-      h('div', { class: 'actions' }, resumable && button('Resume', actions.resume, 'primary'), button(resumable ? 'Start a new client' : 'Start a new client', actions.newRun, resumable ? 'secondary' : 'primary')),
+      !app.view.picking && h('div', { class: 'actions' }, resumable && button('Resume', actions.resume, 'primary'), button('Start a new client', actions.newRun, resumable ? 'secondary' : 'primary')),
       resumable && h('p', { class: 'tiny muted' }, 'Starting a new client replaces the one in progress.'),
       !app.canSave && h('p', { class: 'tiny muted' }, 'Browser storage is unavailable, so this game can\'t be saved or resumed.'),
     ),
@@ -74,7 +101,7 @@ export function renderMenu(app, actions) {
           h(
             'table',
             {},
-            h('thead', {}, h('tr', {}, h('th', {}, 'Result'), h('th', {}, 'Score'), h('th', {}, 'Perf'), h('th', {}, 'Sat'), h('th', {}, 'Realism'))),
+            h('thead', {}, h('tr', {}, h('th', {}, 'Client'), h('th', {}, 'Result'), h('th', {}, 'Score'), h('th', {}, 'Perf'), h('th', {}, 'Sat'))),
             h(
               'tbody',
               {},
@@ -82,11 +109,11 @@ export function renderMenu(app, actions) {
                 h(
                   'tr',
                   {},
+                  h('td', {}, ECONOMICS[r.businessId]?.label ?? r.businessId),
                   h('td', {}, r.endReason === 'declined' ? (r.walkAwayCorrect ? 'Walked away' : 'Declined') : r.endReason.replace('_', ' ')),
                   h('td', {}, score(r.components.adScore)),
                   h('td', {}, score(r.components.performance)),
                   h('td', {}, score(r.components.satisfaction)),
-                  h('td', {}, String(r.realism)),
                 ),
               ),
             ),

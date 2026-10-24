@@ -8,11 +8,13 @@ import { noticeBar, stickyActions } from './common.js';
 import { adSetEditor } from './adSetEditor.js';
 import { blankAdSet, reconcileAdSet } from '../flow.js';
 import { money, num } from '../format.js';
-import { metaLeads } from '../../engine/benchmarks.js';
-import { BUSINESS_BENCHMARKS } from '../../config/benchmarks.js';
+import { briefBench } from '../../engine/week.js';
+import { termsFor } from '../terms.js';
 
+/** A store starts from Sales with the purchase event; everyone else from Leads. */
 export function initialDraft(run) {
-  return { setup: 'advantage', adSets: [reconcileAdSet(run, blankAdSet(), 'objective')], active: 0 };
+  const base = run.brief.goal === 'sales' ? blankAdSet({ objective: 'sales', location: 'website', goal: 'conversions', event: 'purchase' }) : blankAdSet();
+  return { setup: 'advantage', adSets: [reconcileAdSet(run, base, run.brief.goal === 'sales' ? 'event' : 'objective')], active: 0 };
 }
 
 /** Shared editor for a whole campaign (setup type, ad set tabs, split). Used by launch and relaunch. */
@@ -21,7 +23,8 @@ export function campaignEditor(app, actions, draftKey) {
   const draft = app.view[draftKey];
   const update = (patch) => actions.setView({ [draftKey]: { ...draft, ...patch } });
   const active = Math.min(draft.active, draft.adSets.length - 1);
-  const bench = metaLeads(BUSINESS_BENCHMARKS[run.businessId].meta);
+  const bench = briefBench(run.brief);
+  const t = termsFor(run);
   const totalShare = draft.adSets.reduce((s, a) => s + a.budgetShare, 0) || 1;
   const weekly = run.brief.weeklyBudget * run.budgetFactor;
   const setAdSet = (i, a) => update({ adSets: draft.adSets.map((x, j) => (j === i ? a : x)) });
@@ -74,7 +77,7 @@ export function campaignEditor(app, actions, draftKey) {
       h(
         'p',
         { class: 'small muted' },
-        `At ${money(weekly)} a week and a typical ${money(bench.cpl, 2)} per lead, the whole budget buys about ${num(weekly / bench.cpl)} leads a week. Meta's learning phase wants about 50 optimization events per ad set per week.`,
+        `At ${money(weekly)} a week and a typical ${money(bench.cost, 2)} per ${t.result}, the whole budget buys about ${num(weekly / bench.cost)} ${t.results} a week. Meta's learning phase wants about 50 optimization events per ad set per week.`,
       ),
     ),
   );

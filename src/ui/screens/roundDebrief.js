@@ -5,6 +5,8 @@ import { stickyActions } from './common.js';
 import { cost, money, num } from '../format.js';
 import { roundDebrief } from '../../engine/debrief.js';
 import { contentFor } from '../../content/index.js';
+import { termsFor } from '../terms.js';
+import { resultLine } from './week.js';
 
 export function renderRoundDebrief(app, actions) {
   const run = app.run;
@@ -17,6 +19,8 @@ export function renderRoundDebrief(app, actions) {
   const rewrites = contentFor(run.businessId).debrief.POLICY_REWRITES;
   const policy = d.driver.key === 'policy' ? (d.driver.flags || []).filter((f) => rewrites[f]) : [];
   const gap = n.trueLeads > 0 ? n.reportedLeads / n.trueLeads : null;
+  const t = termsFor(run);
+  const week = run.weeks.find((w) => w.week === d.week);
   return h(
     'div',
     { class: 'stack' },
@@ -33,12 +37,13 @@ export function renderRoundDebrief(app, actions) {
         'div',
         { class: 'stats' },
         stat('Spend', money(n.spend)),
-        stat('Real leads', num(n.trueLeads), `platform said ${num(n.reportedLeads)}`, gap !== null && gap > 1.5 ? 'warn' : null),
-        stat('Booked clients', num(n.jobs)),
-        stat('Real cost per lead', cost(n.trueCpl)),
-        stat('Platform cost per lead', cost(n.platformCpl)),
+        stat(`Real ${t.results}`, num(n.trueLeads), `platform said ${num(n.reportedLeads)}`, gap !== null && (gap > 1.5 || gap < 0.5) ? 'warn' : null),
+        t.sales ? stat('Sales', money(week.totals.revenue), `ROAS ${n.spend > 0 ? (week.totals.revenue / n.spend).toFixed(2) : '0.00'}x`) : stat(t.Jobs, num(n.jobs)),
+        stat(`Real ${t.costPer}`, cost(n.trueCpl)),
+        stat(`Platform ${t.costPer}`, cost(n.platformCpl)),
         stat('Results vs expectation', n.results === null ? 'no delivery' : `${Math.round(n.results)}/100`),
       ),
+      t.pooled && h('p', { class: 'small' }, resultLine(run, week.totals)),
       meter('Client satisfaction', n.satisfaction),
       meter('Relationship', n.relationship),
     ),

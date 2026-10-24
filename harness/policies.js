@@ -11,8 +11,9 @@
 //                  the naive policy's job; a uniformly random objective is a trap 4 times in 5)
 
 import { contentFor } from '../src/content/index.js';
-import { setupContext, effectiveDefects } from '../src/engine/run.js';
-import { OBJECTIVES, goalOptions, eventOptions, needsEvent, AUDIENCE_OPTIONS } from '../src/engine/metaRules.js';
+import { setupContext, effectiveDefects, currentWeeklyBudget } from '../src/engine/run.js';
+import { OBJECTIVES, goalOptions, eventOptions, needsEvent, AUDIENCE_OPTIONS, objectiveForGoal, resolveSetup } from '../src/engine/metaRules.js';
+import { briefBench } from '../src/engine/week.js';
 import { isProhibited } from '../src/engine/policy.js';
 import { TUNABLES } from '../src/config/tunables.js';
 
@@ -28,7 +29,7 @@ function bestEventResponse(state) {
 function bestOnboarding(state) {
   const checks = contentFor(state.businessId).checks;
   const out = checks.map((c) => ({ type: 'audit', check: c.id }));
-  out.push({ type: 'naming', choice: 'neutral' });
+  if (contentFor(state.businessId).naming) out.push({ type: 'naming', choice: 'neutral' });
   return out;
 }
 
@@ -42,7 +43,7 @@ function bestOnboardingFollowUp(state) {
   const blocked = state.brief.redFlag === 'no_access';
   const tryFix = (id) => {
     const c = checks.find((x) => x.id === id);
-    if (has(id) && c.fixHours && !o.fixed[id] && c.fixHours <= budget && !(blocked && ['pixel', 'capi', 'landing', 'crm'].includes(id))) {
+    if (has(id) && c.fixHours && !o.fixed[id] && !out.some((d) => d.type === 'fix' && d.check === id) && c.fixHours <= budget && !(blocked && ['pixel', 'capi', 'landing', 'crm'].includes(id))) {
       out.push({ type: 'fix', check: id });
       budget -= c.fixHours;
       return true;
@@ -50,6 +51,10 @@ function bestOnboardingFollowUp(state) {
     return false;
   };
   tryFix('pixel');
+  if (state.brief.goal === 'sales') {
+    tryFix('landing');
+    tryFix('capi');
+  }
   if (has('speed') && budget >= 0.5) {
     out.push({ type: 'advise', check: 'speed' });
     budget -= 0.5;
@@ -79,9 +84,21 @@ function planLocation(state, { assumeFixed = [] } = {}) {
   return callsOk ? 'calls' : 'instant';
 }
 
+/** Ecomm: the purchase-path event whose expected weekly volume is closest to 50 (7.4). */
+function salesEvent(state) {
+  const cpa = briefBench(state.brief).cost;
+  const weekly = currentWeeklyBudget(state);
+  const E = TUNABLES.ecomm.events;
+  const dist = (ev) => Math.abs((weekly / (cpa * E[ev].cpl)) * E[ev].eventsPerPurchase - TUNABLES.learning.eventsToExit);
+  return ['initiate_checkout', 'add_to_cart'].reduce((a, b) => (dist(b) < dist(a) ? b : a));
+}
+
 function bestCampaign(state) {
+  const base = { audience: { option: 'controls', minAge: 18 }, angles: [...contentFor(state.businessId).recommended.angles], budgetShare: 1 };
+  if (state.brief.goal === 'sales') {
+    return { setup: 'advantage', adSets: [{ ...base, objective: 'sales', location: 'website', goal: 'conversions', event: salesEvent(state) }] };
+  }
   const plan = planLocation(state);
-  const base = { audience: { option: 'controls', minAge: 18 }, angles: ['expert_injectors', 'new_client_offer'], budgetShare: 1 };
   let adSet;
   if (plan === 'website') adSet = { ...base, objective: 'leads', location: 'website', goal: 'leads', event: 'lead' };
   else if (plan === 'calls') adSet = { ...base, objective: 'leads', location: 'calls', goal: 'calls' };
@@ -104,7 +121,7 @@ export function bestPractice(state) {
       const next = state.weekIndex + 1;
       const a = state.campaign.adSets[0];
       if (next === 5 && state.campaign.adSets.length === 1 && a.angleStartWeek < 4) {
-        out.push({ type: 'editAdSet', adSetId: a.id, changes: { angles: ['expert_injectors', 'before_after'] } });
+        out.push({ type: 'editAdSet', adSetId: a.id, changes: { angles: [...contentFor(state.businessId).recommended.refresh] } });
       }
       out.push({ type: 'endWeek', update: 'honest' });
       return out;
@@ -174,6 +191,8 @@ function randomAdSet(state, rng, objective) {
       if (!evs.length) continue;
       event = rng.pick(evs).id;
     }
+    // Random means random within real setups; trap goals are the naive policy's job.
+    if (resolveSetup({ objective, location, goal, event, formType: 'higher_intent' }, state.brief.goal).kind === 'trap') continue;
     const aud = rng.pick(AUDIENCE_OPTIONS);
     const minAge = aud.id === 'limited' ? rng.pick([18, 18, 21, 25]) : rng.pick([18, 21, 25]);
     const n = rng.int(1, 3);
@@ -205,12 +224,12 @@ export function random(state, rng) {
           hours += c.auditHours;
         }
       }
-      if (rng.chance(0.5)) out.push({ type: 'naming', choice: rng.pick(['neutral', 'sensitive']) });
+      if (contentFor(state.businessId).naming && rng.chance(0.5)) out.push({ type: 'naming', choice: rng.pick(['neutral', 'sensitive']) });
       out.push({ type: 'finishOnboarding' });
       return out;
     }
     case 'setup': {
-      const objective = 'leads';
+      const objective = objectiveForGoal(state.brief.goal);
       const n = rng.int(1, 3);
       return [{ type: 'launch', campaign: { setup: rng.pick(['advantage', 'manual']), adSets: Array.from({ length: n }, () => randomAdSet(state, rng, objective)) } }];
     }

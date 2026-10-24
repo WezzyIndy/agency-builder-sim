@@ -464,7 +464,7 @@ function applyEffect(state, fx) {
       const a =
         fx.kind === 'boost'
           ? normalizeAdSet({ objective: 'engagement', location: 'on_ad_post', goal: 'post_engagement', audience: { option: 'controls', minAge: 18 }, angles: base.angles }, nextAdSetId(state), week)
-          : normalizeAdSet({ ...base }, nextAdSetId(state), week);
+          : normalizeAdSet({ ...base, angles: fx.angles ?? base.angles }, nextAdSetId(state), week);
       const share = fx.kind === 'boost' ? 0.2 : 0.3;
       for (const x of adSets) {
         x.budgetShare *= 1 - share;
@@ -503,6 +503,14 @@ function applyEffect(state, fx) {
       }
       break;
     }
+    case 'setAngles':
+      // A messaging change the client asked for to fix a real problem (e.g., HVAC lead mix).
+      for (const a of adSets) {
+        a.angles = [...fx.angles];
+        a.angleStartWeek = week;
+        recordEdit(state, a, 'angles', true);
+      }
+      break;
     case 'higherIntent':
       for (const a of adSets) {
         if (a.formType === 'volume') {

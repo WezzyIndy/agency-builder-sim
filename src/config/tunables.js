@@ -27,6 +27,9 @@ export const TUNABLES = {
     modifierWeight: [null, 1.0, 0.95, 0.9, 0.75, 0.55],
   },
 
+  // Hidden per-client offset on angle lead quality and HVAC lead mix, as a multiple of resonanceSd.
+  angleCloseSdScale: 3,
+
   // Product of non-benchmark cost modifiers is clamped (9.6).
   clamp: [0.4, 2.5],
 
@@ -82,6 +85,8 @@ export const TUNABLES = {
 
   // HVAC lead mix (9.2): replacement odds multipliers by lead source. Angles carry their own.
   hvacMix: { call: 1.25, form: 1.0, instantHigh: 0.95, instantVolume: 0.75, messaging: 0.85 },
+  // Share of HVAC value units from realized jobs (the rest is leads at expected close).
+  hvacRealizedWeight: 0.4,
 
   // Tracking (9.4)
   tracking: {

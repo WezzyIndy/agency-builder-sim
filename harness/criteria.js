@@ -1,7 +1,8 @@
 // harness/criteria.js
 //
-// Spec Section 16 pass criteria that apply to M0 (KTD6 bands):
-//   1  realism 1-3, achievable: best-practice median true CPL inside the benchmark band
+// Spec Section 16 pass criteria (KTD6 bands), per business:
+//   1  realism 1-3, achievable: best-practice median true cost per result inside the benchmark band
+//      (CPL for leads, HVAC blended at a 70% service share; CPA for ecomm)
 //   2  realism 1-3, achievable: best-practice median beats naive median by >= 30%
 //   3  realism 3, achievable: failure rate best-practice <= 10%, naive >= 50%
 //   4  realism 3, hard: best-practice failure rate in [15%, 50%]
@@ -9,15 +10,17 @@
 //   6  no NaN or Infinity in any week
 //   8  difficulty mix within +/-5 points of target, per business per level
 //   9  no brief takes more than 200 economic draws
+//   10 economically unviable briefs can't be won: best-practice runs end in a failure state or
+//      with Performance < 60 in >= 80% of runs
+//      (only where the business has natural unviable economics at L1: cleaning, apparel)
 //   11 med spa policy: prohibited copy disapproved 80%, before/after 10% (Meta portion)
-// Deferred: 7 (pitch, M2), 10 (needs economically unviable briefs, M4), 11 Search (M3).
+// Deferred: 7 (pitch, M2), 11 Search (M3).
 
 import { playRun } from './play.js';
 import { median, percentile } from '../src/engine/math.js';
-import { metaLeads } from '../src/engine/benchmarks.js';
-import { BUSINESS_BENCHMARKS } from '../src/config/benchmarks.js';
-import { generateBrief, BUSINESS_IDS } from '../src/engine/brief.js';
-import { TARGET_MIX } from '../src/config/difficulty.js';
+import { metaCostBench } from '../src/engine/benchmarks.js';
+import { generateBrief, BUSINESS_IDS, naturalMix } from '../src/engine/brief.js';
+import { TARGET_MIX, NATURAL_SHARE_MIN } from '../src/config/difficulty.js';
 import { policyCheck } from '../src/engine/policy.js';
 import { TUNABLES } from '../src/config/tunables.js';
 
@@ -55,15 +58,16 @@ function finiteWeeks(runs) {
 /** Campaign criteria for one business. Returns rows { id, label, value, threshold, pass }. */
 export function campaignCriteria(businessId, n, log = () => {}) {
   const rows = [];
-  const bench = metaLeads(BUSINESS_BENCHMARKS[businessId].meta);
-  const [lo, hi] = bench.cplBand;
+  const bench = metaCostBench(businessId);
+  const [lo, hi] = bench.band;
+  const unit = bench.kind === 'sales' ? 'CPA' : 'CPL';
   const all = [];
   const cache = {};
   const cell = (policy, realism, cls) => {
     const key = `${policy}|${realism}|${cls}`;
     if (!cache[key]) {
       log(`  playing ${key} x${n}`);
-      cache[key] = runCell(policy, businessId, realism, cls, n, 100000 * realism + (cls === 'hard' ? 50000 : 0));
+      cache[key] = runCell(policy, businessId, realism, cls, n, 100000 * realism + ({ achievable: 0, hard: 50000, unviable: 70000 })[cls]);
       all.push(...cache[key]);
     }
     return cache[key];
@@ -73,7 +77,7 @@ export function campaignCriteria(businessId, n, log = () => {}) {
     const best = cell('bestPractice', r, 'achievable');
     const naive = cell('naive', r, 'achievable');
     const m = median(best.map(trueCpl));
-    rows.push({ id: `1@r${r}`, label: `Best-practice median true CPL in band (realism ${r})`, value: m, threshold: `${lo.toFixed(2)}-${hi.toFixed(2)}`, pass: m >= lo && m <= hi });
+    rows.push({ id: `1@r${r}`, label: `Best-practice median true ${unit} in band (realism ${r})`, value: m, threshold: `${lo.toFixed(2)}-${hi.toFixed(2)}`, pass: m >= lo && m <= hi });
     const nm = median(naive.map(trueCpl));
     rows.push({ id: `2@r${r}`, label: `Best beats naive median by >= 30% (realism ${r})`, value: Number.isFinite(nm) ? m / nm : 0, threshold: '<= 0.70', pass: m <= 0.7 * nm });
   }
@@ -102,11 +106,19 @@ export function campaignCriteria(businessId, n, log = () => {}) {
   rows.push({ id: '5a', label: 'Realism 5: best-practice median beats random', value: Number.isFinite(rm) ? bm / rm : 0, threshold: '< 1', pass: bm < rm });
   rows.push({ id: '5b', label: 'Realism 5: best-practice loses to random', value: losses / best5.length, threshold: '>= 0.15', pass: losses / best5.length >= 0.15 });
 
+  if (naturalMix(businessId, 1).unviable >= NATURAL_SHARE_MIN) {
+    const unviable = cell('bestPractice', 3, 'unviable').filter((s) => s.brief.classSource === 'economics');
+    // A run the client ended for missing the target isn't a win, whatever its partial Performance.
+    const won = (s) => s.final.performance >= 60 && !FAILURES.includes(s.final.endReason);
+    const lost = unviable.filter((s) => !won(s)).length / Math.max(1, unviable.length);
+    rows.push({ id: '10', label: `Economically unviable briefs can't be won (${unviable.length} runs)`, value: lost, threshold: '>= 0.80', pass: unviable.length > 0 && lost >= 0.8 });
+  }
+
   const bad = finiteWeeks(all);
   rows.push({ id: '6', label: 'No NaN or Infinity in any week', value: bad || 'none', threshold: 'none', pass: !bad });
 
   // Context, not criteria: spread of best-practice outcomes.
-  rows.push({ id: 'info', label: 'Best-practice true CPL p10 / p90 (realism 3)', value: `${percentile(best3.map(trueCpl), 10).toFixed(1)} / ${percentile(best3.map(trueCpl), 90).toFixed(1)}`, threshold: '', pass: null });
+  rows.push({ id: 'info', label: `Best-practice true ${unit} p10 / p90 (realism 3)`, value: `${percentile(best3.map(trueCpl), 10).toFixed(1)} / ${percentile(best3.map(trueCpl), 90).toFixed(1)}`, threshold: '', pass: null });
   return rows;
 }
 

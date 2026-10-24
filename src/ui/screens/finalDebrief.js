@@ -4,12 +4,13 @@ import { h, button, section, stat } from '../dom.js';
 import { stickyActions } from './common.js';
 import { money, cost, num, score, pct, hours } from '../format.js';
 import { finalDebrief } from '../../engine/debrief.js';
+import { termsFor } from '../terms.js';
 
 function scoreTone(x) {
   return x >= 70 ? 'good' : x >= 40 ? 'warn' : 'bad';
 }
 
-function counterfactualCard(cf) {
+function counterfactualCard(cf, t) {
   if (!cf.found) {
     return section(
       'What would have changed the outcome',
@@ -32,8 +33,8 @@ function counterfactualCard(cf) {
           'tbody',
           {},
           h('tr', {}, h('td', {}, 'Outcome'), h('td', {}, b.endReason.replace('_', ' ')), h('td', {}, a.endReason.replace('_', ' '))),
-          h('tr', {}, h('td', {}, 'Booked clients'), h('td', {}, num(b.jobs)), h('td', {}, num(a.jobs))),
-          h('tr', {}, h('td', {}, 'Real cost per lead'), h('td', {}, cost(b.qaCpl)), h('td', {}, cost(a.qaCpl))),
+          h('tr', {}, h('td', {}, t.Jobs), h('td', {}, num(b.jobs)), h('td', {}, num(a.jobs))),
+          h('tr', {}, h('td', {}, `Real ${t.costPer}${t.pooled || t.sales ? ', by value' : ''}`), h('td', {}, cost(b.qaCpl)), h('td', {}, cost(a.qaCpl))),
           h('tr', {}, h('td', {}, 'Client profit after fee'), h('td', {}, money(b.clientProfit)), h('td', {}, money(a.clientProfit))),
           h('tr', {}, h('td', {}, 'Satisfaction'), h('td', {}, score(b.satisfaction)), h('td', {}, score(a.satisfaction))),
         ),
@@ -48,6 +49,7 @@ export function renderFinalDebrief(app, actions) {
   if (app.view.finalCache?.key !== key) app.view.finalCache = { key, d: finalDebrief(run) };
   const d = app.view.finalCache.d;
   const s = d.scores;
+  const words = termsFor(run);
   const children = [
     h(
       'section',
@@ -68,20 +70,31 @@ export function renderFinalDebrief(app, actions) {
     children.push(
       section(
         'Results',
-        h('div', { class: 'stats' }, stat('Spend', money(t.spend)), stat('Real leads', num(t.trueLeads)), stat('Booked clients', num(t.jobs)), stat('Real cost per lead', cost(t.trueCpl)), stat('Profit target', cost(d.target)), stat('Client expected', cost(d.promise.cost))),
-        gap && gap.gap !== null && Math.abs(gap.gap) > 0.15 && h('div', { class: 'notice warn' }, `The platform reported ${num(gap.reportedLeads)} leads; the client really got ${num(gap.trueLeads)} (${gap.gap > 0 ? '+' : ''}${pct(gap.gap)}).`),
+        h(
+          'div',
+          { class: 'stats' },
+          stat('Spend', money(t.spend)),
+          stat(`Real ${words.results}`, num(t.trueLeads)),
+          words.sales ? stat('Sales', money(t.revenue), `ROAS ${t.roas !== null ? t.roas.toFixed(2) : '0.00'}x`) : stat(words.Jobs, num(t.jobs)),
+          stat(`Real ${words.costPer}`, cost(t.trueCpl)),
+          words.pooled || words.sales ? stat('Real cost by value', cost(t.qaCpl), 'what Performance scores') : null,
+          stat('Profit target', cost(d.target)),
+          stat('Client expected', cost(d.promise.cost)),
+        ),
+        words.pooled && h('p', { class: 'small' }, `${num(t.replacementLeads)} replacement and ${num(t.serviceLeads)} service leads; ${num(t.replacementJobs)} replacement ${t.replacementJobs === 1 ? 'job' : 'jobs'} sold.`),
+        gap && gap.gap !== null && Math.abs(gap.gap) > 0.15 && h('div', { class: 'notice warn' }, `The platform reported ${num(gap.reportedLeads)} ${words.results}; the client really got ${num(gap.trueLeads)} (${gap.gap > 0 ? '+' : ''}${pct(gap.gap)}).`),
       ),
       section(
         'Client profit',
         h(
           'dl',
           { class: 'kv' },
-          h('dt', {}, 'After ads and your fee (first visits)'),
+          h('dt', {}, words.sales ? 'After ads and your fee (first orders)' : 'After ads and your fee (first jobs)'),
           h('dd', { class: p.afterFee >= 0 ? '' : 'muted' }, money(p.afterFee)),
           h('dt', {}, 'Ads only, before your fee'),
           h('dd', {}, money(p.adsOnly)),
-          h('dt', {}, 'After fee, counting 12-month value'),
-          h('dd', {}, money(p.afterFee12)),
+          p.afterFee12 - p.afterFee > 0.5 && h('dt', {}, 'After fee, counting 12-month value'),
+          p.afterFee12 - p.afterFee > 0.5 && h('dd', {}, money(p.afterFee12)),
           h('dt', {}, 'Your fee took'),
           h('dd', {}, money(p.feePaid)),
         ),
@@ -91,7 +104,7 @@ export function renderFinalDebrief(app, actions) {
         h('dl', { class: 'kv' }, h('dt', {}, 'Fee revenue'), h('dd', {}, money(d.agencyPnl.feeRevenue)), h('dt', {}, 'Hours spent'), h('dd', {}, hours(d.agencyPnl.hours)), h('dt', {}, 'Effective hourly rate'), h('dd', {}, money(d.agencyPnl.effectiveRate)), h('dt', {}, 'Your target'), h('dd', {}, money(d.agencyPnl.targetRate))),
         h('div', { class: ['notice', d.agencyPnl.verdict === 'keep' ? 'good' : 'warn'] }, d.agencyPnl.verdictText),
       ),
-      counterfactualCard(d.counterfactual),
+      counterfactualCard(d.counterfactual, words),
     );
   }
 

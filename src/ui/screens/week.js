@@ -12,6 +12,7 @@ import { money, cost, num, score } from '../format.js';
 import { contentFor } from '../../content/index.js';
 import { currentWeeklyBudget } from '../../engine/run.js';
 import { OBJECTIVES, LOCATION_LABELS, GOAL_LABELS, EVENT_LABELS } from '../../engine/metaRules.js';
+import { termsFor } from '../terms.js';
 
 export const LABELS = {
   objective: (id) => OBJECTIVES[id]?.label ?? id,
@@ -137,10 +138,20 @@ function startAdding(app, actions) {
   actions.setView({ adding: { draft: base, share }, edit: null, shares: null });
 }
 
+/** One line on what the week's results were worth: jobs, HVAC mix, or store revenue. */
+export function resultLine(run, t) {
+  const words = termsFor(run);
+  if (words.sales) return `${num(t.jobs)} ${t.jobs === 1 ? words.job : words.jobs} from ${money(t.spend)} of spend: ${money(t.revenue)} in sales, ROAS ${t.spend > 0 ? (t.revenue / t.spend).toFixed(2) : '0.00'}x.`;
+  const jobs = `${num(t.jobs)} ${t.jobs === 1 ? words.job : words.jobs} from ${money(t.spend)} of spend.`;
+  if (words.pooled) return `${num(t.replacementLeads)} replacement and ${num(t.serviceLeads)} service leads. ${jobs}`;
+  return jobs;
+}
+
 function lastWeekCard(run) {
   const w = run.weeks.at(-1);
   if (!w) return null;
   const t = w.totals;
+  const words = termsFor(run);
   return section(
     `Week ${w.week} recap`,
     h(
@@ -149,21 +160,22 @@ function lastWeekCard(run) {
       h(
         'table',
         {},
-        h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, 'Leads'), h('th', {}, 'Cost/lead'))),
+        h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, words.Results), h('th', {}, words.sales ? 'Cost/purchase' : 'Cost/lead'))),
         h(
           'tbody',
           {},
           h('tr', {}, h('td', {}, 'Platform reported'), h('td', {}, num(t.reportedLeads)), h('td', {}, cost(t.platformCpl))),
-          h('tr', {}, h('td', {}, 'Real (client\'s CRM)'), h('td', {}, num(t.trueLeads)), h('td', {}, cost(t.trueCpl))),
+          h('tr', {}, h('td', {}, words.sales ? 'Real (store orders)' : 'Real (client\'s records)'), h('td', {}, num(t.trueLeads)), h('td', {}, cost(t.trueCpl))),
         ),
       ),
     ),
-    h('p', { class: 'small' }, `${num(t.jobs)} booked ${t.jobs === 1 ? 'client' : 'clients'} from ${money(t.spend)} of spend.`),
+    h('p', { class: 'small' }, resultLine(run, t)),
   );
 }
 
 function historyCard(run) {
   if (run.weeks.length < 2) return null;
+  const words = termsFor(run);
   return section(
     'All weeks',
     h(
@@ -172,11 +184,11 @@ function historyCard(run) {
       h(
         'table',
         {},
-        h('thead', {}, h('tr', {}, h('th', {}, 'Wk'), h('th', {}, 'Spend'), h('th', {}, 'Leads'), h('th', {}, 'Booked'), h('th', {}, 'Real CPL'), h('th', {}, 'Sat'))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Wk'), h('th', {}, 'Spend'), h('th', {}, words.Results), h('th', {}, words.sales ? 'Sales' : 'Closed'), h('th', {}, 'Real cost'), h('th', {}, 'Sat'))),
         h(
           'tbody',
           {},
-          run.weeks.map((w) => h('tr', {}, h('td', {}, String(w.week)), h('td', {}, money(w.totals.spend)), h('td', {}, num(w.totals.trueLeads)), h('td', {}, num(w.totals.jobs)), h('td', {}, cost(w.totals.trueCpl)), h('td', {}, score(w.satisfaction)))),
+          run.weeks.map((w) => h('tr', {}, h('td', {}, String(w.week)), h('td', {}, money(w.totals.spend)), h('td', {}, num(w.totals.trueLeads)), h('td', {}, words.sales ? money(w.totals.revenue) : num(w.totals.jobs)), h('td', {}, cost(w.totals.trueCpl)), h('td', {}, score(w.satisfaction)))),
         ),
       ),
     ),
@@ -208,7 +220,7 @@ export function renderWeek(app, actions) {
       { class: 'card hero' },
       h('div', { class: 'eyebrow' }, `Week ${week} of ${run.brief.campaignWeeks} · ${run.brief.name}`),
       h('h1', {}, run.weekIndex === 0 ? 'Launch week.' : 'Plan the week.'),
-      h('p', { class: 'muted' }, `Ad budget this week: ${money(currentWeeklyBudget(run))}. Client expects about ${cost(run.brief.expectation.cost)} per real lead${run.brief.expectation.rampWeeks ? ` after a ${run.brief.expectation.rampWeeks}-week ramp` : ''}.`),
+      h('p', { class: 'muted' }, `Ad budget this week: ${money(currentWeeklyBudget(run))}. Client expects about ${cost(run.brief.expectation.cost)} per real ${termsFor(run).result}${run.brief.expectation.rampWeeks ? ` after a ${run.brief.expectation.rampWeeks}-week ramp` : ''}.`),
       last && meter('Client satisfaction', last.satisfaction),
       last && meter('Relationship', run.relationship),
     ),
