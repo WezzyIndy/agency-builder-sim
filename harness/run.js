@@ -18,11 +18,12 @@ function parseArgs(argv) {
     else if (a === '--n') args.n = Number(argv[++i]);
     else if (a === '--criteria') args.criteria = argv[++i];
     else if (a === '--quiet') args.quiet = true;
+    else if (a === '--self-test-fail') args.selfTestFail = true; // proves the exit code works
   }
   return args;
 }
 
-export function runHarness({ business, n, criteria, quiet }) {
+export function runHarness({ business, n, criteria, quiet, selfTestFail = false }) {
   const log = quiet ? () => {} : (m) => console.error(m);
   const rows = [];
   if (criteria === 'all' || criteria === 'campaign') {
@@ -32,6 +33,7 @@ export function runHarness({ business, n, criteria, quiet }) {
   }
   if (criteria === 'all' || criteria === 'policy') rows.push(...policyCriteria());
   if (criteria === 'all' || criteria === 'mix') rows.push(...mixCriteria());
+  if (selfTestFail) rows.push({ id: 'self-test', label: 'Deliberate failure (--self-test-fail)', value: 1, threshold: '0', pass: false });
   return rows;
 }
 
