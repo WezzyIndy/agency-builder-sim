@@ -164,3 +164,22 @@ test('nothing can be applied to a finished run', () => {
   const s = applyDecision(createRun({ seed: 1, businessId: 'medspa' }), { type: 'decline' });
   assert.match(tryDecision(s, { type: 'accept' }).error, /over/);
 });
+
+test('an ad set can be added mid-campaign: same objective, its own budget share, learning from that week', () => {
+  let s = null;
+  for (let seed = 17; !s; seed++) {
+    const t = playWeeks(launched(seed), 2);
+    if (t.status === 'running' && !t.pendingEvent) s = t;
+  }
+  const week = s.weekIndex + 1;
+  const r = tryDecision(s, { type: 'addAdSet', adSet: websiteAdSet({ objective: 'engagement', angles: ['new_client_offer'], budgetShare: 0.3 }) });
+  assert.ok(r.ok, r.error);
+  const added = r.state.campaign.adSets.at(-1);
+  assert.equal(r.state.campaign.adSets.length, 2);
+  assert.equal(added.objective, 'leads', 'the campaign objective wins');
+  assert.equal(added.startWeek, week);
+  assert.ok(Math.abs(added.budgetShare - 0.3) < 1e-9);
+  assert.ok(Math.abs(r.state.campaign.adSets.reduce((t, a) => t + a.budgetShare, 0) - 1) < 1e-9);
+  const next = playWeeks(r.state, 1);
+  assert.ok(next.weeks.at(-1).adSets.some((x) => x.id === added.id), 'the new ad set spends the following week');
+});

@@ -102,6 +102,41 @@ function budgetSplit(app, actions) {
   );
 }
 
+const MAX_AD_SETS = 6;
+
+/** A new ad set added mid-campaign: same objective, starts learning from zero next week. */
+function addAdSetCard(app, actions) {
+  const run = app.run;
+  const adding = app.view.adding;
+  if (!adding) return null;
+  const share = adding.share;
+  const others = run.campaign.adSets.length;
+  const save = () => {
+    if (actions.decide({ type: 'addAdSet', adSet: { ...adding.draft, budgetShare: share / 100 } })) actions.setView({ adding: null });
+  };
+  return h(
+    'div',
+    { class: 'check' },
+    h('div', { class: 'check-head' }, h('strong', {}, 'New ad set'), h('span', { class: 'tag warn' }, 'Starts learning from zero')),
+    adSetEditor(run, adding.draft, { lockObjective: true, onChange: (d) => actions.setView({ adding: { ...adding, draft: d } }) }),
+    h(
+      'label',
+      { class: 'stack small' },
+      h('span', { class: 'spread' }, h('span', { class: 'field-label' }, 'Budget for the new ad set'), h('span', {}, `${share}% · ${money((currentWeeklyBudget(run) * share) / 100)}/wk`)),
+      h('input', { type: 'range', min: 5, max: 90, step: 5, value: share, 'aria-label': 'New ad set budget share', onChange: (ev) => actions.setView({ adding: { ...adding, share: Number(ev.target.value) } }) }),
+      h('span', { class: 'tiny muted' }, `Taken proportionally from the existing ${others === 1 ? 'ad set' : `${others} ad sets`}, which counts as a budget edit for them.`),
+    ),
+    h('div', { class: 'actions' }, button('Cancel', () => actions.setView({ adding: null }), 'secondary'), button('Add ad set', save, 'primary')),
+  );
+}
+
+function startAdding(app, actions) {
+  const run = app.run;
+  const base = JSON.parse(JSON.stringify(run.campaign.adSets[0]));
+  const share = Math.round(100 / (run.campaign.adSets.length + 1) / 5) * 5;
+  actions.setView({ adding: { draft: base, share }, edit: null, shares: null });
+}
+
 function lastWeekCard(run) {
   const w = run.weeks.at(-1);
   if (!w) return null;
@@ -156,7 +191,7 @@ export function renderWeek(app, actions) {
   const relaunching = Boolean(app.view.relaunch);
   const runWeek = () => {
     if (actions.decide({ type: 'endWeek', update })) {
-      actions.setView({ update: null, edit: null, shares: null, relaunch: null });
+      actions.setView({ update: null, edit: null, shares: null, relaunch: null, adding: null });
       actions.showDebrief(run.weekIndex + 1);
     }
   };
@@ -182,8 +217,15 @@ export function renderWeek(app, actions) {
     section(
       'Campaign',
       h('div', { class: 'stack' }, run.campaign.adSets.map((a) => adSetCard(app, actions, a, last))),
-      budgetSplit(app, actions),
-      !relaunching && h('div', { class: 'row' }, button('Relaunch as a new campaign', () => actions.setView({ relaunch: { setup: run.campaign.setup, adSets: run.campaign.adSets.map((a) => JSON.parse(JSON.stringify(a))), active: 0 } }), 'ghost')),
+      addAdSetCard(app, actions),
+      !app.view.adding && budgetSplit(app, actions),
+      !relaunching &&
+        h(
+          'div',
+          { class: 'row' },
+          !app.view.adding && !app.view.edit && run.campaign.adSets.length < MAX_AD_SETS && button('+ Add ad set', () => startAdding(app, actions), 'secondary'),
+          button('Relaunch as a new campaign', () => actions.setView({ relaunch: { setup: run.campaign.setup, adSets: run.campaign.adSets.map((a) => JSON.parse(JSON.stringify(a))), active: 0 } }), 'ghost'),
+        ),
       h('p', { class: 'tiny muted' }, 'Budget, event, audience, and creative changes are significant edits: learning restarts the next week.'),
     ),
     relaunching &&
@@ -196,6 +238,6 @@ export function renderWeek(app, actions) {
       ),
     historyCard(run),
     section('Client update', h('p', { class: 'small muted' }, 'What do you tell the client this week?'), chips('Client update', UPDATES, update, (id) => actions.setView({ update: id }))),
-    stickyActions(button(run.pendingEvent ? 'Answer the client first' : `Run week ${week}`, runWeek, 'primary', { class: 'btn btn-primary btn-block', disabled: Boolean(run.pendingEvent) || Boolean(app.view.edit) || relaunching })),
+    stickyActions(button(run.pendingEvent ? 'Answer the client first' : `Run week ${week}`, runWeek, 'primary', { class: 'btn btn-primary btn-block', disabled: Boolean(run.pendingEvent) || Boolean(app.view.edit) || Boolean(app.view.adding) || relaunching })),
   );
 }
