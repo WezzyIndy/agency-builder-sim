@@ -140,6 +140,10 @@ function drawHiddenState(rng, businessId) {
     // Per-brief hidden angle resonance offsets; scaled by realism at simulation time.
     resonanceZ: Array.from({ length: 8 }, () => clamp(rng.normal(0, 1), -2.5, 2.5)),
     marketZ: clamp(rng.normal(0, 1), -2.5, 2.5),
+    // Hidden per-client fit of lead sources and audience options; matters more at high realism.
+    affinityZ: Object.fromEntries(
+      ['form', 'call', 'instant', 'messaging', 'controls', 'suggestions', 'limited'].map((k) => [k, clamp(rng.normal(0, 1), -2.5, 2.5)]),
+    ),
   };
 }
 

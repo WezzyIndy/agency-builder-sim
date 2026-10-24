@@ -17,22 +17,25 @@ export const TUNABLES = {
 
   // Realism slider (9.8), index 1-5.
   realism: {
-    weeklySd: [null, 0.06, 0.1, 0.15, 0.22, 0.3],
+    weeklySd: [null, 0.06, 0.1, 0.15, 0.25, 0.35],
     marketSd: [null, 0.04, 0.07, 0.1, 0.14, 0.18],
-    resonanceSd: [null, 0.02, 0.05, 0.08, 0.13, 0.18],
-    // Exponent on non-benchmark modifiers: best-practice edges shrink as realism rises.
-    modifierWeight: [null, 1.0, 0.95, 0.9, 0.8, 0.7],
+    resonanceSd: [null, 0.02, 0.05, 0.08, 0.13, 0.22],
+    // Hidden per-client affinity for lead sources and audience options.
+    affinitySd: [null, 0.02, 0.05, 0.08, 0.15, 0.3],
+    // Exponent on non-benchmark modifiers (cost and lead quality): best-practice edges
+    // shrink as realism rises, so unconventional setups can win at realism 5.
+    modifierWeight: [null, 1.0, 0.95, 0.9, 0.75, 0.55],
   },
 
   // Product of non-benchmark cost modifiers is clamped (9.6).
   clamp: [0.4, 2.5],
 
   // Setup and audience (7.1, 7.5): multipliers on cost per result.
-  advantagePlusSetup: 0.95,
+  advantagePlusSetup: 0.97,
   audience: {
-    controls: 0.95,
+    controls: 0.97,
     controlsCorrupted: 1.15, // broad delivery amplifies a corrupted signal
-    suggestionsEarly: 0.95, // weeks 1-2
+    suggestionsEarly: 0.97, // weeks 1-2
     suggestions: 1.0,
     limited: 1.18,
   },
@@ -72,8 +75,8 @@ export const TUNABLES = {
     corruptClose: 0.85,
   },
   landingWeakCvr: 0.75,
-  speedToLead: { fast: 1.1, average: 1.0, slow: 0.75, slowAdvised: 0.85 },
-  seasonality: { offSeasonFirstHalf: 1.3, peak: 0.92 },
+  speedToLead: { fast: 1.1, average: 1.0, slow: 0.6, slowAdvised: 0.7 },
+  seasonality: { offSeasonFirstHalf: 1.5, peak: 0.92 },
 
   // Creative fatigue (9.7)
   fatigue: { startAfterWeek: 3, ctrDecay: 0.9 },
@@ -82,7 +85,8 @@ export const TUNABLES = {
   policy: { prohibitedDisapproval: 0.8, beforeAfterDisapproval: 0.1, relationshipHit: -5 },
 
   // Satisfaction (13.3)
-  satisfaction: { resultsWeight: 0.7, relationshipStart: 70, rampRelax: 1.5, resultsExponent: 1 },
+  // resultsExponent 2: a client paying twice the promised cost per booked lead is unhappy, not half-happy.
+  satisfaction: { resultsWeight: 0.7, relationshipStart: 70, rampRelax: 1.5, resultsExponent: 2 },
   relationship: {
     honestBad: -2,
     honestGood: 1,
@@ -90,8 +94,6 @@ export const TUNABLES = {
     spunSurface: -12,
     skipped: -6,
     disclosedDefect: 2,
-    undisclosedSurface: -12,
-    surfaceWeek: 3,
   },
 
   // Failure states (13.5) [STATED approved]
@@ -117,7 +119,7 @@ export const TUNABLES = {
     noCallTracking: 0.6,
     noCrm: 0.7,
     landingWeak: 0.2,
-    slowSpeed: 0.2,
+    slowSpeed: 0.12,
     dataRestricted: 0.08,
     missingPurchase: 0.12,
   },
