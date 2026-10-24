@@ -4,6 +4,15 @@ A single-player web game that builds the skills to launch and run a paid-social 
 
 All results are simulated from published benchmark ranges plus randomness. The game builds intuition and repetition. It does not prove real-world delivery.
 
+**Play it:** https://wezzyindy.github.io/agency-builder-sim/ (works on phone and desktop; progress saves in your browser).
+
+## What's in this build (M0 + M1)
+
+- **Ads Manager Only mode, med spa, Level 1 (Meta).** A generated client brief, Round 0 onboarding (6 hours to audit, fix, or disclose tracking defects), campaign setup, 8 weekly rounds with client events and weekly updates, a debrief every week, and a final debrief with a counterfactual replay, client profit after your fee, and your agency P&L.
+- **The simulation engine and calibration harness** for all of it, plus brief generation and difficulty for all 6 v1 businesses.
+
+Not in this build: pitch mode and Full Run (M2), Google Search (M3), the other 5 businesses' playable content and ecomm simulation (M4), Sandbox, Firebase sync across devices, score-history views, and the explainer library (M5). Those modes show as "coming soon" in the menu.
+
 The full design is in [`agency-builder-sim-spec-v4.md`](agency-builder-sim-spec-v4.md). The current build plan is in [`docs/plans/`](docs/plans/).
 
 ## Running locally
