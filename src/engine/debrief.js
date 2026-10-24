@@ -10,6 +10,8 @@
 import { contentFor } from '../content/index.js';
 import { computeCounterfactual } from './counterfactual.js';
 import { sum } from './math.js';
+import { metaLeads } from './benchmarks.js';
+import { BUSINESS_BENCHMARKS } from '../config/benchmarks.js';
 
 const HURT_THRESHOLD = Math.log(1.08);
 
@@ -39,7 +41,11 @@ export function roundDebrief(state, weekNumber) {
     const ranked = Object.entries(factors).sort((a, b) => b[1] - a[1]);
     const [worstKey, worstLog] = ranked[0] || ['market', 0];
     const [bestKey, bestLog] = ranked[ranked.length - 1] || ['market', 0];
-    if (worstLog >= HURT_THRESHOLD) driver = { key: worstKey, direction: 'hurt', mult: Math.exp(worstLog) };
+    if (worstLog >= HURT_THRESHOLD) {
+      // A campaign's first week always starts learning from zero; that's launch, not a mistake.
+      const isLaunch = worstKey === 'learning' && state.campaignStartWeeks?.includes(weekNumber);
+      driver = { key: isLaunch ? 'launch' : worstKey, direction: 'hurt', mult: Math.exp(worstLog) };
+    }
     else if (bestLog <= -HURT_THRESHOLD && text[bestKey]?.helped) driver = { key: bestKey, direction: 'helped', mult: Math.exp(bestLog) };
     else driver = { key: 'steady', direction: 'steady' };
   }
@@ -100,6 +106,15 @@ function difficultyText(brief) {
   return `${brief.class === 'hard' ? 'Hard' : 'Unviable'}: after your fee, the client\'s target cost per lead is ${brief.ratio.toFixed(2)}x the benchmark.`;
 }
 
+/** Explains an expectation below the whole benchmark range: no setup reliably meets it. */
+function expectationNote(state) {
+  const range = metaLeads(BUSINESS_BENCHMARKS[state.businessId].meta).cplRange;
+  const ex = state.brief.expectation;
+  if (ex.cost >= range.min) return null;
+  const money = (x) => `$${x.toFixed(2)}`;
+  return `The client expected ${money(ex.cost)} per lead, below the entire published benchmark range (${money(range.min)}-${money(range.max)}). No setup reliably beats that. In a pitch you would reset that expectation before taking the fee (pitch mode arrives in a later build); in this mode, honest weekly updates are your only lever.`;
+}
+
 export function finalDebrief(state) {
   const f = state.final;
   const content = contentFor(state.businessId);
@@ -116,6 +131,7 @@ export function finalDebrief(state) {
     scores: { adScore: f.adScore, performance: f.performance, bestPractice: f.bestPractice, satisfaction: f.satisfaction },
     walkAway: f.walkAway,
     difficulty: { ...f.difficulty, text: difficultyText(state.brief) },
+    expectationNote: f.endReason === 'declined' ? null : expectationNote(state),
     totals: f.totals,
     target: state.brief.target.cost,
     promise: state.brief.expectation,

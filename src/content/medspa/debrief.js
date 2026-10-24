@@ -31,6 +31,10 @@ export const DRIVER_TEXT = {
     hurt: 'Learning reset this week. Edits, pauses, or a relaunch threw away the signal you had built.',
     stronger: 'Batch changes. At most one significant edit per ad set every two weeks, unless you\'re fixing an error.',
   },
+  launch: {
+    hurt: 'Launch week. Every new campaign starts learning from zero, so the first week costs more.',
+    stronger: 'Nothing to fix yet. Leave it alone so next week builds on this signal.',
+  },
   fragmentation: {
     hurt: 'The budget is split across too many ad sets. Each one gets a handful of events and stays learning-limited.',
     stronger: 'Consolidate into one ad set. At this budget, one ad set is the most the money can teach.',

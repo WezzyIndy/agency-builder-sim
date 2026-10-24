@@ -59,6 +59,7 @@ export function createRun({ seed, businessId = 'medspa', level = 1, realism = 3,
     onboarding: { hoursUsed: 0, audited: {}, fixed: {}, disclosed: {}, advised: {}, naming: null },
     campaign: null,
     campaignCount: 0,
+    campaignStartWeeks: [],
     weekIndex: 0,
     weeks: [],
     relationship: T.satisfaction.relationshipStart,
@@ -323,6 +324,7 @@ const HANDLERS = {
     requireStatus(state, 'setup');
     state.campaign = buildCampaign(state, campaign, 1);
     state.campaignCount = 1;
+    state.campaignStartWeeks = [1];
     state.status = 'running';
   },
 
